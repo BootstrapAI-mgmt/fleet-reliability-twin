@@ -1,73 +1,71 @@
 # Documented failures
 
-Things that were wrong during development, how each was found, and what the
-fix was. Each one was found by checking a number against truth, not by the
-code raising an error — which is the argument for having truth to check
-against.
+Things that went wrong while building this, with the mechanism and the fix.
+These are kept because the reasoning is more useful than the final numbers.
 
-## 1. Tail trimming biased β low by 2×
+## 1. Tail-trimming biased the process scale β low by 2×
 
 The first variance regression trimmed the top 2% of squared residuals "for
-robustness". Monthly gamma increments at shape 0.27 carry most of their
-variance in the tail; trimming it cut the estimated β to half its true
-value, and the per-unit α doubled to compensate (the rate αβ is estimated
-directly, so the product was right and each factor was wrong). Sensor σ was
-recovered almost perfectly, which made the result look healthy.
+robustness". For a gamma process with monthly shape ≈ 0.27, most of the
+variance lives in that tail; trimming it returned β ≈ 0.37 against a true
+0.80, and the downstream α estimates were 2.8× high with the rate αβ still
+"correct". Sensor σ was recovered exactly, which hid the problem: a checked
+parameter can look fine while the one it trades off against is wrong.
+
 **Fix:** no trimming of increments. Robustness to faulted sensors comes from
-rejecting whole *units* whose variance statistic is outlying, and from the
-second fit pass that excludes flagged channels.
+rejecting whole *units* whose variance statistic is an outlier, and from the
+second fit pass that excludes channels the detector has flagged. Unit-level
+rejection does not truncate the distribution; increment-level trimming does.
 
-## 2. Increment-level OLS collapsed σ to its floor
+## 2. Increment-level OLS on squared residuals collapsed σ to its floor
 
-Removing the trim made the untrimmed increment-level regression unstable:
-a handful of extreme squared residuals from scale-error channels pushed β
-high and the noise intercept negative. **Fix:** aggregate to the unit level
-(sums over ~60 increments are far less skewed) and regress the unit
-variance statistic on `[rate·Σdu, n]`, with iterative whole-unit rejection.
+With trimming removed, regressing e² on [rate·du, 1] at the increment level
+was dominated by a few enormous squared residuals from faulted channels and
+returned a negative intercept (σ² < 0 → floored). Aggregating to unit level
+(sum of ~60 increments) reduced skewness enough for least squares to be
+stable, and it made the outlier rejection in (1) possible.
 
-## 3. Testing a rate change against the channel's own fitted rate made long accelerations invisible
+## 3. Testing against the channel's own fitted rate made long accelerations invisible
 
-The first change-point scan compared post-onset increments with the
-channel's fitted α. Because α is pooled over the channel's whole history, a
-long-running acceleration was absorbed into the channel's own α and the
-residuals looked normal — *longer* faults were *less* detectable, which is
-how it was noticed. **Fix:** estimate α from the pre-onset window only
-(blended with the fleet prior) and test the post-onset sum against that.
+The first change-point statistic compared post-onset increments to the
+channel's fitted α. Because α was pooled across the channel's whole history,
+a long-running 2× acceleration was absorbed into α itself, and the longer the
+fault had run, the *less* detectable it became — the opposite of what any
+reasonable test should do. The monotonic reversal in power vs duration was the
+clue. **Fix:** estimate α from the pre-onset window only (blended with the
+fleet prior), and fold its uncertainty into the test variance.
 
-## 4. Flagged channels disappeared from the forecast
+## 4. A "self-calibrated" threshold that wasn't
 
-The second fit pass excludes flagged channels, so they have no posterior
-row, and `build_state` skipped them. 338 components with the *worst*
-sensors got no RUL and nothing said so. The only symptom was that section 3
-of the verification listed a single damage basis. **Fix:** a channel with no
-posterior is forecast from the fleet prior (shrinkage 1.0), labelled
-"channel excluded from fleet fit; severity is the fleet prior".
+An earlier E2 statistic set its threshold at the 99.9th percentile of a
+rolling-window score over the 90% of channels with the smallest maxima.
+Calibrating on windows and flagging on channel maxima are different tests;
+the result was 979 false alarms (8% of clean channels). Replaced by an exact
+gamma-tail p-value with Bonferroni correction over candidate onsets, so the
+false-alarm rate is a stated number (0.1% per channel), and the achieved rate
+(0.44%, including the spike test) is measured in verify.py.
 
-## 5. Threshold estimated 2–4% high
+## 5. A spike p-value that ignored sensor noise
 
-L was taken as the 97th percentile of each failed serial's maximum reading.
-Those maxima are noisy readings clustered just under L, so the quantile sits
-≈ z(0.97)·σ above L, and every RUL was slightly optimistic (cumulative
-failures under-predicted, z ≈ +10). **Fix:** subtract the noise quantile.
+The single-increment spike test used the pure gamma tail. On smooth,
+low-β components the noise variance is larger than the process variance per
+increment, so the test produced >100 false spikes. Moment-matching a gamma to
+the noise-inclusive variance fixed it.
 
-## 6. The spike test ignored sensor noise
+## 6. A corruption that was undetectable by construction
 
-The single-increment p-value used the gamma tail of the process alone. On
-the smooth, low-β components the noise variance exceeds the process variance
-per increment and the test produced >100 false bias-step flags. **Fix:**
-moment-matched gamma with variance αβ²du + 2σ².
+The first "negative reading" corruption subtracted 0.01. Readings near zero
+legitimately go slightly negative from sensor noise, so this corruption was
+indistinguishable from valid data and any "detection rate" for it would have
+been meaningless. The corruption was made unambiguous; `units_x10` on small
+readings remains partially undetectable at ingest (0.88 caught) and this is
+stated rather than tuned away.
 
-## 7. The provenance audit rejected the narrative
+## 7. Month-1 over-prediction of first failures
 
-Not a numerics failure — the audit refused "90% band" because the interval
-level had not been registered as a fact. The fix was to register it, not to
-relax the audit.
-
-## Things that are limits, not bugs
-
-- A bias step smaller than ~3 increment standard deviations cannot be seen
-  in the increments; it shows up at the next part install as a non-zero
-  offset. Detection latency equals time-to-next-install.
-- Power against a 2× rate acceleration falls with process erraticness and
-  with a short pre-onset baseline, and is low when the accelerated rate is
-  still below fleet-typical. Reported per component in the verification.
+The expected-failure curve over-predicts month 1 (433 vs 327 actual) and is
+well calibrated thereafter (17/18 months inside the 90% band). Units whose
+last reading sits just under the estimated threshold are assigned near-certain
+immediate failure, but the threshold estimate is a 97th-percentile lower
+bound and the reading carries noise. This is visible, not hidden, and the
+fix (a noise-aware posterior on x0) is listed under future work.

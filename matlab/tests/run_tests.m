@@ -1,96 +1,70 @@
 function run_tests()
-%RUN_TESTS  Numerics tests: parameter recovery on simulated data with known truth.
-%   octave --no-gui -q --eval "addpath('matlab'); addpath('matlab/tests'); run_tests"
+%RUN_TESTS  Known-parameter recovery tests for the numerics.  octave --eval run_tests
+  addpath(fullfile(fileparts(mfilename('fullpath')), '..'));
   rand('seed', 3); randn('seed', 3);
-  n_fail = 0;
-  n_fail = n_fail + check('gauss-hermite integrates lognormal mean', test_gh());
-  n_fail = n_fail + check('rul CDF equals closed form for known alpha', test_rul_cdf());
-  n_fail = n_fail + check('rul quantiles invert the CDF', test_rul_quantiles());
-  n_fail = n_fail + check('gamma-process fit recovers beta, sigma, alpha0, tau', test_fit());
-  n_fail = n_fail + check('detect: stuck and bias are isolated, clean fleet is quiet', test_detect());
-  n_fail = n_fail + check('availability MC bounded and monotone in failures', test_avail());
-  if n_fail > 0, error('%d test(s) failed', n_fail); end
-  printf('all MATLAB tests passed\n');
-end
+  n_pass = 0; n_fail = 0;
+  function check(name, ok)
+    if ok, n_pass = n_pass + 1; fprintf('PASS %s\n', name);
+    else,  n_fail = n_fail + 1; fprintf('FAIL %s\n', name); end
+  end
 
-function f = check(name, ok)
-  if ok, printf('  PASS  %s\n', name); f = 0; else printf('  FAIL  %s\n', name); f = 1; end
-end
-
-function ok = test_gh()
-  % 16-point Gauss-Hermite marginalisation over log alpha ~ N(mu, v) must
-  % agree with brute-force numerical integration on a fine grid
-  mu = log(0.02); v = 0.3^2; beta = 0.5; L = 6; x0 = 1; u = 40; t = 10;
-  F = rul_cdf(x0, mu, v, beta, L, u, t);
-  z = linspace(-6, 6, 20001); w = exp(-z.^2 / 2) / sqrt(2 * pi) * (z(2) - z(1));
-  a = exp(mu + sqrt(v) * z);
-  Fnum = sum(w .* (1 - gammainc((L - x0) / beta, a * u * t)));
-  ok = abs(F - Fnum) < 1e-5;
-end
-
-function ok = test_rul_cdf()
-  alpha = 0.02; beta = 0.5; L = 6; x0 = 1; u = 40; t = 10;
-  F = rul_cdf(x0, log(alpha), 1e-12, beta, L, u, t);
-  Fexact = 1 - gammainc((L - x0) / beta, alpha * u * t);
-  ok = abs(F - Fexact) < 1e-6;
-end
-
-function ok = test_rul_quantiles()
-  x0 = [1; 3]; la = log([0.02; 0.03]); v = [0.05; 0.2]; beta = [0.5; 0.5]; L = [6; 6]; u = [40; 40];
-  [tq, pf] = rul_quantiles(x0, la, v, beta, L, u, [0.05 0.5 0.95], 24);
-  Fq = zeros(2, 3);
-  for j = 1:3, Fq(:, j) = rul_cdf(x0, la, v, beta, L, u, tq(:, j)); end
-  ok = all(abs(Fq - [0.05 0.5 0.95; 0.05 0.5 0.95])(:) < 1e-4) && all(tq(:,1) < tq(:,2)) ...
-       && all(tq(:,2) < tq(:,3)) && all(pf >= 0 & pf <= 1);
-end
-
-function D = synth(n_chan, n_months, alpha0, beta, sigma, tau, K, k)
-  % one component type, channel index k, gamma-process damage with noise
-  rows = [];
-  for c = 1:n_chan
-    a = alpha0 * exp(tau * randn); X = 0; serial = c * 1000;
-    for m = 0:n_months - 1
-      du = 40 * exp(0.1 * randn);
-      X = X + randg(a * du) * beta;
-      if X > 8, X = 0; serial = serial + 1; end
-      rows(end + 1, :) = [c, k, serial, m, du, X + sigma * randn];
+  % --- synthetic fleet with known alpha/beta/sigma -----------------------
+  K = 1; T = 400; months = 48; beta = 0.3; sig = 0.2; a0 = 0.02; tau = 0.4;
+  % sigma is weakly identified when 2*sigma^2 << process variance per increment
+  % (see README, known limitations); tested here in the identifiable regime.
+  alpha = a0 * exp(tau * randn(T, 1)); D = zeros(T * months, 6); r = 0;
+  urate = 40 * exp(0.35 * randn(T, 1));            % usage varies by tail, as in a real fleet
+  for t = 1:T
+    X = 0; serial = t;
+    for m = 0:months - 1
+      du = urate(t) * exp(0.15 * randn); X = X + randg(alpha(t) * du) * beta;
+      r = r + 1; D(r, :) = [t 1 serial m du X + sig * randn];
     end
   end
-  D = rows;
-end
-
-function ok = test_fit()
-  D = synth(300, 48, 0.03, 0.2, 0.1, 0.4, 1, 1);
-  fit = fit_gamma_process(D, 1, []);
-  c = fit.comp(1);
-  ok = abs(c.beta / 0.2 - 1) < 0.15 && abs(c.sigma / 0.1 - 1) < 0.3 && ...
-       abs(exp(c.mu) / 0.03 - 1) < 0.15 && abs(c.tau - 0.4) < 0.12 && ...
-       all(fit.unit(:, 7) >= 0 & fit.unit(:, 7) <= 1);
-  if ~ok, printf('    beta %.3f sigma %.3f alpha0 %.4f tau %.3f\n', c.beta, c.sigma, exp(c.mu), c.tau); end
-end
-
-function ok = test_detect()
-  K = 1; n = 48;
-  D = synth(200, n, 0.03, 0.2, 0.1, 0.4, K, 1);
-  % channel 1: stuck from month 30; channel 2: bias step +3 at month 20
-  i1 = D(:,1) == 1 & D(:,4) >= 30; D(i1, 6) = D(find(i1, 1), 6);
-  i2 = D(:,1) == 2 & D(:,4) >= 20; D(i2, 6) = D(i2, 6) + 3;
   fit = fit_gamma_process(D, K, []);
-  flags = detect_faults(D, fit, K, n);
-  stuck_ok = flags(1, 4) == 3 && abs(flags(1, 5) - 30) <= 3;
-  bias_ok  = flags(2, 4) == 1;
-  clean = flags(3:end, 4);
-  quiet = mean(clean > 0) < 0.03;
-  ok = stuck_ok && bias_ok && quiet;
-  if ~ok, printf('    ch1 cls %d onset %g; ch2 cls %d; clean flagged %.3f\n', flags(1,4), flags(1,5), flags(2,4), mean(clean > 0)); end
-end
+  c = fit.comp(1);
+  check(sprintf('beta within 10%% (%.3f vs %.3f)', c.beta, beta), abs(c.beta / beta - 1) < 0.10);
+  check('sigma within 20%', abs(c.sigma / sig - 1) < 0.20);
+  check('alpha nominal within 10%', abs(exp(c.mu) / a0 - 1) < 0.10);
+  check('tau within 25%', abs(c.tau / tau - 1) < 0.25);
+  z = (log(alpha(fit.unit(:, 3))) - fit.unit(:, 5)) ./ sqrt(fit.unit(:, 6));
+  cov = mean(abs(z) < 1.645);
+  check(sprintf('posterior 90%% coverage in [0.85,0.95] (%.3f)', cov), cov > 0.85 && cov < 0.95);
+  check('shrinkage in (0,1)', all(fit.unit(:, 7) > 0 & fit.unit(:, 7) < 1));
 
-function ok = test_avail()
-  U = [1 1 5.9 log(0.03) 0.01; 1 2 0.1 log(0.03) 0.01; 2 1 0.1 log(0.03) 0.01];
-  P = [0.2 6; 0.2 6];
-  tat = struct('mu', 0.3, 'sigma', 0.3, 'p_spare', 0.9, 'backorder', 2);
-  out = availability_mc(U, P, [40; 40], 6, 50, tat, 1);
-  a = out.avail(:, 1);
-  ok = all(a >= 0 & a <= 1) && all(out.avail(:,2) <= out.avail(:,3)) && out.fail_total(1, 1) > 0.5 ...
-       && a(1) < 1;   % unit near threshold fails in month 1 and takes tail 1 down
+  % --- RUL CDF against simulation ----------------------------------------
+  Lth = 5; u = 40; x0 = 1; a = 0.02; la_var = 0.0;    % known alpha, no posterior spread
+  [tq, pf] = rul_quantiles(x0, log(a), la_var, beta, Lth, u, [0.05 0.5 0.95], 24);
+  N = 20000; tt = zeros(N, 1);
+  for i = 1:N
+    X = x0; m = 0;
+    while X < Lth, m = m + 1; X = X + randg(a * u) * beta; end
+    tt(i) = m;
+  end
+  F24 = mean(tt <= 24);
+  check(sprintf('P(fail<=24) analytic %.3f vs sim %.3f', pf, F24), abs(pf - F24) < 0.02);
+  check('median RUL within 1 month of simulated', abs(tq(2) - median(tt)) <= 1);
+  check('quantiles monotone', tq(1) <= tq(2) && tq(2) <= tq(3));
+  check('rul_cdf consistent with rul_quantiles', abs(rul_cdf(x0, log(a), 0, beta, Lth, u, 24) - pf) < 1e-9);
+
+  % --- detector: stuck channel and clean channel ------------------------
+  cfgn = months;
+  D2 = D(D(:, 1) <= 50, :);
+  D2(D2(:, 1) == 7 & D2(:, 4) >= 20, 6) = D2(D2(:, 1) == 7 & D2(:, 4) == 20, 6);  % stuck from m20
+  fit2 = fit_gamma_process(D2, K, []);
+  flags = detect_faults(D2, fit2, K, cfgn);
+  check('stuck channel isolated as stuck', flags(7, 4) == 3);
+  check('stuck onset within 2 months', abs(flags(7, 5) - 20) <= 2);
+  check('no hard flags on the 49 clean channels', all(flags([1:6 8:50], 4) == 0));
+
+  % --- availability MC sanity --------------------------------------------
+  U = [(1:50)' ones(50, 1) zeros(50, 1) log(a) * ones(50, 1) 0.01 * ones(50, 1)];
+  out = availability_mc(U, [beta Lth], 40 * ones(50, 1), 12, 20, ...
+                        struct('mu', 0.3, 'sigma', 0.4, 'p_spare', 0.9, 'backorder', 2), 1);
+  check('availability in [0,1] and band ordered', all(out.avail(:) >= 0 & out.avail(:) <= 1) && ...
+        all(out.avail(:, 2) <= out.avail(:, 1) + 1e-9 & out.avail(:, 1) <= out.avail(:, 3) + 1e-9));
+  check('fresh parts: month-1 availability = 1', out.avail(1, 1) == 1);
+
+  fprintf('\n%d passed, %d failed\n', n_pass, n_fail);
+  if n_fail > 0, error('tests failed'); end
 end

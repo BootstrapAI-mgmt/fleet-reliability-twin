@@ -1,151 +1,132 @@
 # fleet-reliability-twin
 
 Fleet-scale component deterioration modelling, remaining-useful-life (RUL)
-forecasting with calibrated intervals, sequential anomaly detection with
-fault isolation, and a Monte Carlo availability forecast. MATLAB numerics
-(run and tested on GNU Octave 8, base functions only, no toolboxes) under a
-hardened Python orchestrator. Synthetic data with hidden ground truth; clean
-provenance — new code, no employer material.
+forecasting with verified intervals, sequential anomaly detection with fault
+isolation, and Monte Carlo availability — MATLAB numerics (runs on GNU Octave,
+no toolboxes) under a hardened Python orchestrator. Synthetic data with hidden
+ground truth; clean provenance (new code, no employer material).
 
-Companion to `sustainment-analytics` (maintenance records → hierarchical
-Weibull → METRIC spares) and `depot-flow-twin` (the repair pipeline). This
-repo is the *reliability digital twin* piece: what is the condition of each
-installed component now, when will it fail, and can the sensor be trusted.
-
-The organizing rule is the same across all three:
-**a hardened pipeline is not one that never stops; it is one that never
-silently emits a wrong number.**
-
-## What it does
+Companion to `sustainment-analytics` (spares demand and allocation) and
+`depot-flow-twin` (repair pipeline simulation). The organising rule is the
+same across all three: **a hardened pipeline is not one that never stops; it
+is one that never silently emits a wrong number.**
 
 ```
-719k dirty inspection readings
-   │
-   ▼ ingest          quarantine with reason codes · reconciliation assert · refusal gate
-   ▼ fit (pass 1)    hierarchical gamma-process wear model, partial pooling per channel
-   ▼ detect          structured-residual sensor screening: spike / rate change / stuck / dropout / install offset
-   ▼ fit (pass 2)    refit with flagged channels excluded
-   ▼ state           thresholds from failure history · damage now, with a stated basis per channel
-   ▼ rul             closed-form first-passage CDF, posterior marginalised by Gauss-Hermite (no MC)
-   ▼ avail           Monte Carlo fleet availability, epistemic + aleatory spread
-   ▼ report          evidence ledger per channel · narrative refused if any figure is untraceable
+dirty inspections ─► ingest ─► fit₁ ─► detect ─► fit₂ ─► state ─► RUL ─► availability ─► ledger
+                     (quarantine, (gamma   (5 fault (flagged  (thresholds,   (closed   (MC,      (evidence per
+                      reconcile,   process, classes, channels  sensor-aware   form,     epistemic  unit, audited
+                      refuse)      EB pool) change-   excluded) damage state)  GH quad)  +aleatory) narrative)
+                                            point)
 ```
-
-Every channel's forecast carries its evidence: where the damage estimate
-came from (reading, stale reading projected, or usage-only because the
-sensor is flagged), how much of its severity posterior is borrowed from the
-fleet, how many increments it rests on, and its sensor status.
-
-## Measured results
-
-From `results/verification_output.txt` — the only code that reads
-`truth.json` is `verify.py`. 1,500 tails × 8 components × 60 months, 18-month
-truth window, 480 faulted sensor channels, 7,180 corrupted records.
-
-| | |
-|---|---|
-| Ingest recall | 100% on 6 of 7 corruption kinds; 89% on 10× unit errors (a 10× error on a small reading is inside the physical range and is caught downstream as a spike residual, not at ingest) |
-| Fleet parameters | β within 2–15%, sensor σ within 2–20%, nominal α within 10–20%, τ 0.32–0.44 vs 0.474, thresholds within 1% |
-| RUL calibration | ECE **0.016** across 10 probability bins, 12,000 channels |
-| RUL interval coverage | **0.866** at nominal 0.90 (reading-based channels); **0.52** for sensor-flagged channels forecast from usage alone — and the ledger says so |
-| Cumulative failures, 18 mo | predicted 5,963 vs actual 5,808 (+2.6%, concentrated in month 1: reading noise near threshold through a convex CDF) |
-| Sensor faults | stuck 96/96 at 0 latency; dropout 91/96; bias step 62/99 (remainder invisible until next install — physics, not the test); false-alarm rate **0.44%** on 11,520 clean channels |
-| 2× rate acceleration | power tracks process shape: 6/9 on smooth wear (shape/mo 4.5) → 0/18 on erratic damage (shape/mo 0.2) |
-
-That last row is the most useful finding. A persistent rate change in a
-gamma process sampled monthly is detectable only when the process is smooth
-enough, the pre-onset baseline is long enough, and the accelerated rate is
-high relative to the fleet. The detector reports p-values against the fitted
-model; the verification measures the power rather than assuming it. A
-watch-list tier (uncorrected p < 0.01) surfaces the weak cases for human
-review without confirming them.
 
 ## Model
 
-Damage X on each channel (tail × component) follows a usage-scaled gamma
-process: increments over usage `du` are Gamma(α·du, β). Failure at threshold
-L; inspections read X + N(0, σ²). Per component, (β, σ) are fleet
-properties; α is a property of the installation and its environment
-(`log α ~ N(μ, τ²)`), pooled across every serial that has occupied the
-channel. (β, σ) come from a unit-level moment regression with whole-unit
-outlier rejection; (μ, τ) from the marginal likelihood. Each channel's
-posterior on log α is the precision-weighted blend of its own data and the
-fleet prior, and the shrinkage factor is reported as the evidence
-attribution.
+Damage `X` on each installed component follows a usage-scaled gamma process,
+`dX ~ Gamma(α·du, β)`, observed monthly through a noisy sensor. Failure is
+first passage of a threshold `L`. `β` and sensor `σ` are component
+properties; severity `α` is a property of the *installation* (tail ×
+component — environment and duty), pooled across every serial that has
+occupied it, with a lognormal fleet prior estimated empirically. Each unit's
+posterior reports how much of it is borrowed from the fleet (the shrinkage
+factor), which is the evidence attribution an operator sees with the number.
 
-RUL uses the gamma process first-passage identity
-`P(T ≤ t) = P(X(t) ≥ L − x0) = 1 − P(α u t, (L−x0)/β)` marginalised over the
-α posterior by 16-point Gauss–Hermite quadrature. No sampling; 12k units in
-~35 s on Octave.
+RUL is the closed-form first-passage CDF of the gamma process, marginalised
+over the α posterior by 16-point Gauss–Hermite quadrature. No sampling.
 
-Sensor screening uses five structured residuals (single-increment spike with
-a noise-aware gamma tail; growing-window change-point scan tested against the
-channel's *pre-onset* rate; exact repeats; trailing coverage; install
-offset) and a signature table to isolate bias step / scale error / stuck /
-dropout / accelerated degradation. All thresholds are p-values, not tuned
-constants.
+Fault isolation uses five structured residuals — single-increment spike,
+growing-window change-point scan against the pre-onset rate, exact repeats,
+missing-record fraction, and non-zero reading at a fresh install — and a
+signature table that separates bias step, scale error, stuck sensor, dropout,
+and genuine accelerated wear. Every threshold is a p-value against the fitted
+model; nothing is hand-tuned.
+
+## Verified results (`results/verification_output.txt`, all against hidden truth)
+
+Fleet: 1,500 tails × 8 components × 60 months; 719k inspection rows; 480
+faulted sensor channels; 7.2k corrupted records; 18-month forecast window.
+
+| | |
+|---|---|
+| Ingest | 7,073 quarantined with reason codes (0.98%), 7 of 7 corruption classes at 100% except `units_x10` at 0.88 (undetectable below the physical fence by design) |
+| Process scale β | all 8 within 2–15% of truth; sensor σ exact where identifiable |
+| Severity posterior | 90% interval covers truth **0.872**; median shrinkage 0.31 |
+| Thresholds | all 8 within 1% |
+| RUL interval coverage | **0.858** at nominal 0.90 (5,808 units that failed in-window) |
+| P(fail within 18 mo) | Brier 0.100 vs 0.250 base rate; calibration by decile within 0.04 everywhere |
+| First failures by month | 17 of 18 months inside the 90% band; total +2.7% |
+| Fault detection | stuck 96/96 at 0 latency, dropout 91/96, bias 62/99 (rest wait for next install), false alarms **0.44%** |
+| Power vs process shape | 2× acceleration: 6/9 at shape 4.5/mo → 0/18 at shape 0.2/mo |
+
+That last row is the most useful finding. Detectability of a rate change from
+monthly inspections is governed by the process shape: smooth wear is caught
+within a month or two; erratic damage arriving in rare large increments
+cannot be resolved per channel inside two years at a 0.1% false-alarm rate,
+however the test is built. The honest product response is a tiered output —
+hard flags with a stated false-alarm rate, plus a watch list (2.5× the base
+rate of true faults) for human review — not a tuned classifier.
+
+Both test suites pass: 15 Octave known-parameter tests, 18 pytest tests of
+ingest, checkpointing, retry policy, and provenance audit.
 
 ## Hardening
 
-- Content-addressed stages: a manifest records the sha256 of every input and
-  parameter; unchanged stages are skipped, any upstream change invalidates
-  everything downstream, a tampered checkpoint is recomputed.
-- Atomic publish: outputs are written to a temp dir and renamed into place.
-- Transient vs permanent failure: an unavailable interpreter is retried
-  with backoff; a numerics error is not (retrying a deterministic error only
-  hides it).
-- Gates: quarantine fraction, flagged-channel fraction, non-finite fleet
-  parameters, non-monotone quantiles, availability outside [0,1] all stop the
-  run.
-- Degradations propagate: a component that cannot be modelled, a channel
-  forecast from the prior only, a stale reading — all recorded and required
-  to appear in the narrative.
-- Provenance audit: any number in the narrative that is not traceable to a
-  fact is a hard error (it caught a literal "90% band" during development).
+- Content-addressed stages: manifests record input hashes; unchanged inputs
+  are skipped, a change anywhere upstream invalidates downstream, and a
+  tampered or partial checkpoint is recomputed rather than trusted.
+- Atomic publish: stages write to a temp dir and `os.replace` into place.
+- Transient vs permanent: interpreter unavailable → retry with backoff;
+  numerics error → stop (retrying a deterministic error only hides it).
+- Gates: ingest refuses above 5% quarantine; detect refuses above 10%
+  flagged; RUL refuses non-monotone quantiles; availability refuses out of
+  [0,1]. A declared output that was not produced is a failure.
+- Degradations (unmodelled component, stale reading, flagged sensor)
+  propagate into every affected unit's evidence and into the narrative.
+- The narrative is audited: any figure not traceable to a computed fact, or
+  any omitted degradation, is a hard error.
 
 ## Layout
 
 ```
-simulate/generate_fleet.py   synthetic fleet with hidden truth (only verify.py reads truth.json)
-pipeline/ingest.py           quarantine, fences, reconciliation, refusal
-pipeline/orchestrator.py     stages, checkpoints, gates, state construction
+simulate/generate_fleet.py   synthetic fleet + hidden truth (only verify.py reads truth.json)
+pipeline/ingest.py           quarantine, reconciliation, refusal
+pipeline/orchestrator.py     stages, checkpoints, gates
+pipeline/report.py           evidence ledger, audited narrative
 pipeline/octave_bridge.py    file-based MATLAB/Octave invocation
-pipeline/report.py           evidence ledger, provenance-audited narrative
-matlab/fit_gamma_process.m   hierarchical fit
-matlab/detect_faults.m       screening and isolation
-matlab/rul_quantiles.m, rul_cdf.m
-matlab/availability_mc.m
-matlab/run_stage.m           entry point; reads and writes only the work dir
-matlab/tests/run_tests.m     6 numerics tests on known-truth simulations
-tests/                       20 pytest tests: ingest, checkpointing, retry, provenance
-verify.py                    scores everything against truth
-results/                     verification_output.txt, summary_example.md, failures.md
+matlab/fit_gamma_process.m   hierarchical fit, EB prior, shrinkage
+matlab/detect_faults.m       five residuals, signature isolation
+matlab/rul_quantiles.m       closed-form RUL, GH quadrature
+matlab/rul_cdf.m
+matlab/availability_mc.m     fleet availability / failure counts
+matlab/run_stage.m           entry point
+matlab/tests/run_tests.m
+tests/                       pytest
+verify.py                    scoring against truth
+results/                     verification_output.txt, failures.md
 ```
 
 ## Run
 
 ```
-pip install -r requirements.txt
-python simulate/generate_fleet.py            # ~30 s, writes data/
-python run.py                                # ~1 min cold, 5 s warm
-python verify.py                             # scores against data/truth.json
-python -m pytest tests
-octave --no-gui -q --eval "addpath('matlab'); addpath('matlab/tests'); run_tests"
+pip install -r requirements.txt          # numpy pandas pytest; octave on PATH (or MATLAB_CMD)
+python simulate/generate_fleet.py        # ~1 min
+python run.py                            # ~2.5 min end to end
+python verify.py
+octave --eval "cd matlab/tests; run_tests"
+pytest
 ```
-
-Set `MATLAB_CMD=matlab` to run the numerics under MATLAB instead of Octave.
 
 ## Known limitations
 
-- Severity is pooled per channel; part-to-part variability (15% log-sd in
-  the synthetic truth) is absorbed into the process and slightly widens the
-  miss on interval coverage (0.87 vs 0.90).
-- The damage estimate for a sensor-flagged channel is usage-since-install,
-  which is biased high for parts installed before the record starts. Its
-  forecast is worse and labelled as such; a better answer is a manual
-  inspection, which is what the ledger recommends.
-- Availability MC uses a single turnaround-time distribution and a flat
-  spare-fill probability; the repair pipeline itself is modelled in
-  `depot-flow-twin`.
-- Synthetic data only. The gamma-process model, the noise model, and the
-  fault classes are assumptions that real fleet data would need to test.
+- Severity is pooled per installation; part-to-part variation (0.15 log-sd in
+  the simulator) is ignored, which is the likely source of the 0.87 vs 0.90
+  posterior coverage.
+- Sensor σ is weakly identified when `2σ²` is much smaller than the
+  per-increment process variance — which is also when it matters least.
+- Current damage for RUL is the last reading, not a noise-aware posterior;
+  this over-predicts month-1 failures for units near threshold (see
+  `results/failures.md` §7).
+- Bias steps are only detectable at the next install; a bias on a channel
+  whose part is never replaced in-window is missed, and the latency
+  distribution reflects that.
+- The availability MC uses a fixed lognormal turnaround and spare-fill
+  probability; the repair side is the subject of `depot-flow-twin`.
