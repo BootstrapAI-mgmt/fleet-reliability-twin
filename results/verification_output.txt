@@ -1,0 +1,84 @@
+== 1. Ingest: recall of injected corruptions by kind ==
+  bad_component  injected  1037  caught  1037  (100.0%)  [UNKNOWN_COMP]
+  bad_tail       injected  1079  caught  1079  (100.0%)  [UNKNOWN_TAIL]
+  dup            injected  1007  caught  1007  (100.0%)  [DUPLICATE]
+  month_oob      injected  1012  caught  1012  (100.0%)  [MONTH_RANGE]
+  neg_reading    injected  1012  caught  1012  (100.0%)  [READING_NEGATIVE]
+  units_x10      injected  1005  caught   897  ( 89.3%)  [READING_FENCE|POINT_OUTLIER]
+  usage_neg      injected  1028  caught  1028  (100.0%)  [USAGE_NEGATIVE]
+  units_x10 partial by design: a 10x error on a small reading is inside the physical range and
+  indistinguishable at ingest; it surfaces downstream as a spike residual.
+
+== 2. Fleet parameter recovery (fit2) ==
+  comp  shape/mo    beta est/true   sigma est/true    alpha0 est/true  tau est   L est/true
+  64E       4.50   0.038/0.040     0.102/0.100     0.1082/0.1000      0.444  5.96/6.00 
+  52C       1.80   0.098/0.100     0.121/0.120     0.0424/0.0400      0.444  6.94/7.00 
+  75G       0.90   0.241/0.250     0.140/0.140     0.0211/0.0200      0.429  7.42/7.50 
+  23A       0.54   0.365/0.400     0.152/0.150     0.0134/0.0120      0.415  7.93/8.00 
+  27F       0.23   0.856/0.900     0.160/0.180     0.0054/0.0050      0.401  8.48/8.50 
+  41B       0.20   1.086/1.200     0.172/0.200     0.0049/0.0045      0.387  8.94/9.00 
+  13D       0.14   1.282/1.500     0.232/0.250     0.0037/0.0030      0.316  8.95/9.00 
+  19H       0.16   1.223/1.300     0.177/0.220     0.0038/0.0035      0.362  9.47/9.50 
+  true tau (fleet log-severity spread) = 0.474
+
+== 3. Current damage estimate vs truth, by basis ==
+  reading                  n=11766  mean err +0.017  sd 0.294  (as fraction of threshold: mean +0.002, sd 0.035)
+  stale_reading_projected  n=   18  mean err +2.647  sd 3.578  (as fraction of threshold: mean +0.309, sd 0.420)
+  usage_model              n=  216  mean err +0.727  sd 1.728  (as fraction of threshold: mean +0.089, sd 0.217)
+
+== 4. RUL calibration over the 18-month truth window ==
+  channels scored 12000; actually failed within window: 5808 (48.4%); predicted expected failures 5963
+  predicted P(fail) bin -> observed failure rate (n)
+    (-0.01, 0.1]   predicted 0.031  observed 0.029  (n=3266)
+    (0.1, 0.2]     predicted 0.145  observed 0.163  (n=1089)
+    (0.2, 0.3]     predicted 0.249  observed 0.226  (n=765)
+    (0.3, 0.4]     predicted 0.348  observed 0.332  (n=563)
+    (0.4, 0.5]     predicted 0.449  observed 0.426  (n=556)
+    (0.5, 0.6]     predicted 0.549  observed 0.513  (n=483)
+    (0.6, 0.7]     predicted 0.651  observed 0.635  (n=524)
+    (0.7, 0.8]     predicted 0.750  observed 0.719  (n=545)
+    (0.8, 0.9]     predicted 0.852  observed 0.814  (n=656)
+    (0.9, 1.0]     predicted 0.984  observed 0.966  (n=3553)
+  expected calibration error (ECE): 0.0162
+  cumulative first failures: month  expected  actual  z
+        1       433     327  -7.29
+        3      1110     980  -6.38
+        6      2144    2045  -3.87
+        9      3170    3078  -3.22
+       12      4176    4065  -3.56
+       15      5116    4961  -4.76
+       18      5963    5808  -4.66
+  90% interval coverage among the 5808 that failed (conditional, truncated at horizon): 0.859
+    basis reading                  n=11766 ECE-like |pred-obs| 0.012  coverage 0.866
+    basis stale_reading_projected  n=   18 ECE-like |pred-obs| 0.240  coverage 0.714
+    basis usage_model              n=  216 ECE-like |pred-obs| 0.059  coverage 0.522
+
+== 5. Sensor fault detection and isolation ==
+pred         accelerated  bias_step  dropout   none  scale_error  stuck
+true                                                                   
+accelerated           15          0        0     89            0      0
+bias_step              1         62        0     36            0      0
+dropout                0          0       91      5            0      0
+none                   8         43        0  11469            0      0
+scale_error            7         12        0     63            3      0
+stuck                  0          0        0      0            0     96
+
+  false-alarm rate on clean channels: 51/11520 = 0.44%   watch-listed clean: 373
+  per class: detected (any flag) / correctly isolated / median latency (months)
+    accelerated  0.14 / 0.14 / 0
+    bias_step    0.64 / 0.63 / 6
+    dropout      0.95 / 0.95 / 17
+    scale_error  0.26 / 0.04 / 0
+    stuck        1.00 / 1.00 / 0
+  power against a 2x rate acceleration by component (gamma shape per month in parentheses):
+    64E (4.50): 6/9 confirmed, 7/9 confirmed-or-watch
+    52C (1.80): 4/16 confirmed, 6/16 confirmed-or-watch
+    75G (0.90): 5/17 confirmed, 10/17 confirmed-or-watch
+    23A (0.54): 0/10 confirmed, 5/10 confirmed-or-watch
+    27F (0.23): 0/10 confirmed, 2/10 confirmed-or-watch
+    41B (0.20): 0/18 confirmed, 4/18 confirmed-or-watch
+    13D (0.14): 0/13 confirmed, 2/13 confirmed-or-watch
+    19H (0.16): 0/11 confirmed, 2/11 confirmed-or-watch
+  Detection power for a persistent rate change falls with process erraticness (low shape) and
+  with short pre-onset baseline; this is a property of monthly inspection of a jump process, not
+  of the test.  bias_step is undetectable until the next part install unless the jump is large.

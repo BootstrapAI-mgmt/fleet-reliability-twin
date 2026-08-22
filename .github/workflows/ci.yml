@@ -1,0 +1,15 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends octave
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - run: octave --no-gui -q --eval "addpath('matlab'); addpath('matlab/tests'); run_tests"
+      - run: python -m pytest -q tests
+      - run: python simulate/generate_fleet.py --tails 200 --months 48
+      - run: python run.py && python verify.py
