@@ -153,3 +153,15 @@ pytest
   distribution reflects that.
 - The availability MC uses a fixed lognormal turnaround and spare-fill
   probability; the repair side is the subject of `depot-flow-twin`.
+
+---
+
+## Companion repositories
+
+One of three, each mirroring a different product in the same domain. They share a design stance -- synthetic data with hidden truth, estimates scored against that truth rather than asserted, and a `failures.md` recording what went wrong and why -- but no code, so each stands alone.
+
+| repo | mirrors | what it does | stack |
+|---|---|---|---|
+| [sustainment-analytics](https://github.com/BootstrapAI-mgmt/sustainment-analytics) | | sparse censored failure records to an auditable spares buy list | MATLAB + Python |
+| **fleet-reliability-twin** (this one) | | gamma-process degradation, sensor-fault isolation, remaining useful life | MATLAB + Python |
+| [depot-flow-twin](https://github.com/BootstrapAI-mgmt/depot-flow-twin) | | Java discrete-event depot simulation, turnaround estimation and forecasting | Java 21 + Python |
