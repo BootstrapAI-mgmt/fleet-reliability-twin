@@ -44,6 +44,10 @@ class IngestResult:
     summary: dict = field(default_factory=dict)
 
 
+# No aircraft flies more hours in a month than the month contains.
+MAX_USAGE_HOURS_PER_MONTH = 24 * 31
+
+
 def ingest(insp: pd.DataFrame, roster: pd.DataFrame, components: list[str],
            n_months: int, max_quarantine_frac: float = 0.05,
            neg_fence: float = 1.0, upper_fence: float = 30.0,
@@ -68,6 +72,14 @@ def ingest(insp: pd.DataFrame, roster: pd.DataFrame, components: list[str],
     tag(~df["component"].isin(set(components)), "UNKNOWN_COMP")
     tag((df["month"] < 0) | (df["month"] >= n_months), "MONTH_RANGE")
     tag(df["usage_hours"] < 0, "USAGE_NEGATIVE")
+    # A negative check alone is not enough. `to_numeric` happily parses
+    # "inf", "Infinity" and "1e400", and a single such row at fleet scale
+    # dragged one component's beta from 0.370 to 1,018,880 -- a factor of
+    # 2.76 million -- turning a component with a coin-flip chance of
+    # failing inside the horizon into an immortal one (P(fail) 0.4988 ->
+    # 0.0001). Every gate downstream accepted it.
+    tag(~np.isfinite(df["usage_hours"]), "USAGE_NONFINITE")
+    tag(df["usage_hours"] > MAX_USAGE_HOURS_PER_MONTH, "USAGE_FENCE")
     tag(df.duplicated(["tail", "component", "serial", "month"], keep="first"), "DUPLICATE")
     tag(df["reading"] < -neg_fence, "READING_NEGATIVE")
     tag(df["reading"] > upper_fence, "READING_FENCE")

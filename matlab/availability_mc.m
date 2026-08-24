@@ -21,7 +21,7 @@ function out = availability_mc(U, P, usage_rate, H, R, tat, seed)
 %   out.fail_total : H x 3
 %   out.n_units, out.R
 
-  rand('seed', seed); randn('seed', seed);
+  rand('seed', seed); randn('seed', seed); randg('seed', seed);  % randg carries its own state
   M = size(U, 1); K = size(P, 1); T = numel(usage_rate);
   tail = U(:,1); comp = U(:,2);
   beta = P(comp, 1); L = P(comp, 2);
@@ -29,14 +29,33 @@ function out = availability_mc(U, P, usage_rate, H, R, tat, seed)
   for rep = 1:R
     alpha = exp(U(:,4) + sqrt(U(:,5)) .* randn(M, 1));
     X = U(:,3);
+
+    % A NaN damage state is SILENTLY IMMORTAL here: X >= L is false for
+    % NaN, so the unit never fails, never enters the failure count, and
+    % counts as mission-capable for the whole horizon. Two routes in -- a
+    % NaN x0 from upstream, and randg(0) which returns NaN in Octave when
+    % alpha underflows. Both are guarded rather than left to produce a
+    % plausible availability curve.
+    if any(~isfinite(X)) || any(~isfinite(alpha)) || any(alpha <= 0)
+      error('avail:nonfinite', ...
+            ['Non-finite or non-positive state entering the availability ' ...
+             'MC (%d bad damage states, %d bad severities).'], ...
+            sum(~isfinite(X)), sum(~isfinite(alpha) | alpha <= 0));
+    end
     down_until = -ones(M, 1);
     for m = 1:H
       du = usage_rate(tail) .* exp(0.15 * randn(M, 1));
       active = down_until < m;
       shp = alpha .* du;
       dX = zeros(M, 1);
-      dX(active) = randg(shp(active)) .* beta(active);
+      % randg(0) is NaN in Octave, and one NaN here makes that unit
+      % immortal for the rest of the horizon.
+      draw = active & shp > 0;
+      dX(draw) = randg(shp(draw)) .* beta(draw);
       X = X + dX;
+      if any(~isfinite(X))
+        error('avail:nonfinite_path', 'Non-finite damage state after month %d.', m);
+      end
       f = active & X >= L;
       if any(f)
         nf = nnz(f);

@@ -69,3 +69,149 @@ last reading sits just under the estimated threshold are assigned near-certain
 immediate failure, but the threshold estimate is a 97th-percentile lower
 bound and the reading carries noise. This is visible, not hidden, and the
 fix (a noise-aware posterior on x0) is listed under future work.
+
+---
+
+The entries below came from an adversarial review of a version that passed
+every test it had. All of them produced a plausible answer rather than an
+error, which is the class this pipeline exists to defend against.
+
+## 8. Detecting a fault made the forecast worse than a constant
+
+The second fit pass excluded *every* flagged channel, so all 338 came back
+with shrinkage 1.0 and took the fleet-mean severity. Scored against truth,
+that was actively harmful:
+
+| class | caught (before) | missed (before) |
+|---|---|---|
+| accelerated | Brier 0.198 | Brier 0.156 |
+
+The units the detector correctly identified as degrading twice as fast were
+forecast *worse* than the ones it missed. Every caught unit subsequently
+failed; the model gave them 0.66.
+
+The mechanism is a category error. Class 5 (`accelerated`) is not a sensor
+fault — it is real damage. Responding to "this unit is wearing out at twice
+the fleet rate" by replacing its severity with the fleet average is exactly
+backwards. `dropout` was the same mistake in milder form: those records are
+*missing*, not wrong, and the readings that survived were clean.
+
+**Fix:** exclude only the classes that corrupt the reading itself — bias
+step, scale error, stuck. Keep dropout and accelerated channels in the fit.
+After the change:
+
+| class | caught | missed |
+|---|---|---|
+| accelerated | **0.000** | 0.160 |
+| dropout | **0.118** | 0.309 |
+
+`verify.py` now asserts caught-versus-missed permanently, because nothing in
+the suite would otherwise notice a detector that degrades the thing it feeds.
+
+## 9. The sampling variance used the increment count where the derivation
+requires the segment count
+
+`Sd = Σ dᵢ` telescopes within a serial to (last reading − first reading), so
+the measurement noise it carries is `2σ²` per **serial segment**, not per
+increment. `detect_faults.m` states that rule in a comment at the top and
+applies it correctly to the post-onset window — and then `fit_gamma_process.m`
+and the pre-onset window of the same file both used the increment count.
+
+The median channel here has 57 increments and 2 segments, so the erroneous
+term was ~28× too large and dominated a process term it should have been a
+fraction of. It biased τ low in all eight components:
+
+| | 64E | 52C | 75G | 23A | 27F | 41B | 13D | 19H |
+|---|---|---|---|---|---|---|---|---|
+| before | 0.444 | 0.444 | 0.429 | 0.415 | 0.401 | 0.387 | 0.316 | 0.362 |
+| after | 0.475 | 0.491 | 0.475 | 0.459 | 0.444 | 0.415 | 0.387 | 0.415 |
+| truth | 0.474 | ← same for all eight |
+
+A systematic bias in all eight, not noise. The README previously attributed
+the resulting coverage gap to part-to-part variation the model ignores — but
+the simulator draws severity once per (tail, component) and never redraws it,
+so there was no such variation. **A plausible explanation for a real symptom
+is not the same as the cause**, and the wrong explanation stopped anyone
+looking further.
+
+## 10. Editing the numerics did not invalidate a single checkpoint
+
+Stage keys hashed the data inputs and the Python-side params. The `.m` files
+were never hashed. Changing the spike threshold in `detect_faults.m` from
+`2e-5` to `0.5` — which flags essentially every channel — produced a
+byte-identical `flags.csv`, because the stage was served from a checkpoint
+keyed on inputs that had not changed. The run reported success and
+republished the previous ledger.
+
+The README claimed "a change anywhere upstream invalidates everything
+downstream". Code is upstream.
+
+**Fix:** hash every `.m` file into the stage key, and lift stage policy (such
+as which fault classes are excluded) into `params` so it is content-addressed
+too. Related: `fit1` and `fit2` declared the *same* output filenames, so each
+overwrote the other's checkpoint and neither could ever be cached — both
+re-ran every time and stayed correct only because the re-run order happened
+to leave the right file on disk.
+
+## 11. The test suite could not pass, and the seed hid it
+
+`run_tests.m` seeded `rand` and `randn`. The fleet is generated with `randg`,
+which has its own generator state and was never seeded — so the suite failed
+about one run in three on an unchanged tree, and CI runs it behind the
+README's status badge.
+
+Seeding `randg` made it deterministic, and then it failed *every* run:
+`beta within 10% (0.338 vs 0.300)`. Replicating the fit across 15 seeds
+showed why. β̂ is essentially unbiased (mean 0.306 against 0.300, 2.0%) but
+its sampling SD is 0.023 — **7.8% of the true value**. A ±10% band on a
+single draw must fail roughly a quarter of the time no matter how correct
+the estimator is.
+
+**Fix:** assert what was actually meant. The suite now averages over
+replicate fleets and compares the bias against the Monte Carlo standard error
+measured from those same replicates, so the tolerance is derived rather than
+chosen and the test fails only for a real bias.
+
+## 12. Four ways a missing value became a confident number
+
+Each of these passed every gate:
+
+- **NaN did not survive the Python→Octave boundary.** `pandas.to_csv` writes
+  NaN as an empty field and Octave's `dlmread` reads an empty field as `0`. A
+  missing damage state arrived as "brand new, zero damage"; a missing
+  log-severity arrived as α = 1, which is 50–250× the fleet nominal.
+- **Inside the numerics, `max` and `min` drop NaN.** `max(L - x0, 1e-9)` with
+  a NaN `x0` returns `1e-9` — "already at threshold, fails within days". So
+  the two ends of the same boundary failed in *opposite* unsafe directions.
+- **A NaN damage state was silently immortal in the availability MC.**
+  `X >= L` is false for NaN, so the unit never failed and counted as mission
+  capable for the whole horizon. `randg(0)` returns NaN in Octave, so
+  posterior underflow was a second route in.
+- **`usage_hours` had no upper fence and no finiteness check.** One row of
+  `inf` or `1e12` at fleet scale moved a component's β from 0.370 to
+  1,018,880 — a factor of 2.76 million — turning a component with a coin-flip
+  chance of failing inside the horizon into an immortal one (P(fail) 0.4988 →
+  0.0001).
+
+And the gates themselves failed open, because `np.nan < 0` and `np.nan > 1`
+are both `False`. **A check that fails open is worse than no check, because
+it is also a claim.**
+
+**Fix:** `na_rep="NaN"` on every frame crossing the boundary; explicit
+finiteness guards at the top of the RUL and availability numerics rather than
+clamps; a physical fence and a finiteness check on usage; and `np.isfinite`
+first in every gate. The RUL gate distinguishes `+Inf` — which is a
+documented "does not reach threshold inside the horizon" — from NaN, which
+never means anything.
+
+## 13. Sixteen-node quadrature was not converged
+
+The posterior over log-severity is integrated out by Gauss–Hermite. Against a
+4001-point reference the 16-node result was off by up to **0.028** in
+per-unit P(fail) — larger than the calibration error of the whole model — and
+convergence only sets in near 64 nodes. The worst cases were the channels
+with the widest posterior, where the integrand is a sharp sigmoid in the
+quadrature variable.
+
+The fleet *total* was unaffected because the errors cancel, which is why it
+went unnoticed. The per-channel number is the one an operator acts on.

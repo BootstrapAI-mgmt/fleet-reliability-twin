@@ -45,13 +45,25 @@ function fit = fit_gamma_process(D, K, exclude_channel)
   if ~isempty(exclude_channel)
     ex = exclude_channel(chan); keep = keep & ~ex(:);
   end
-  du = du(keep); d = d(keep); comp = comp(keep); tail = tail(keep); chan = chan(keep);
+  ser = serial(i2);
+  du = du(keep); d = d(keep); comp = comp(keep); tail = tail(keep);
+  chan = chan(keep); ser = ser(keep);
 
   [useq, ~, uid] = unique(chan);
   M = numel(useq);
   ucomp = accumarray(uid, comp, [M 1], @max);
   utail = accumarray(uid, tail, [M 1], @max);
   n_incr = accumarray(uid, 1, [M 1]);
+
+  % Distinct serials per channel. This is NOT the same as the increment
+  % count, and the difference matters below: Sd = sum(d_i) TELESCOPES
+  % within a serial to (last reading - first reading), so the measurement
+  % noise it carries is 2*sigma^2 per SERIAL SEGMENT, not per increment.
+  % In this fleet the median channel has 57 increments and 2 segments, so
+  % using the increment count inflated that term ~28x and let it dominate
+  % a process term it should be a fraction of.
+  seg_pairs = unique([uid, ser], 'rows');
+  n_seg = accumarray(seg_pairs(:,1), 1, [M 1]);
   Sdu = accumarray(uid, du, [M 1]);
   Sd  = accumarray(uid, d,  [M 1]);
   rate = max(Sd ./ max(Sdu, eps), 1e-6);        % r_c = estimate of alpha_c*beta
@@ -68,7 +80,7 @@ function fit = fit_gamma_process(D, K, exclude_channel)
                            'n_units', numel(uk), 'n_incr', 0, 'rejected_units', 0);
       continue;
     end
-    nu = n_incr(uk); Su = Sdu(uk); ru = rate(uk); Vu = Ve(uk);
+    nu = n_incr(uk); Su = Sdu(uk); ru = rate(uk); Vu = Ve(uk); ns = n_seg(uk);
 
     % ---- beta, sigma: unit-level moment regression -----------------------
     %   E[sum e^2 * n/(n-1)] = beta * (r_c * Sdu_c) + 2 sigma^2 * n_c
@@ -90,7 +102,11 @@ function fit = fit_gamma_process(D, K, exclude_channel)
 
     % ---- per-unit log alpha and its sampling variance --------------------
     la = log(ru / beta);
-    var_r = (ru .* beta .* Su + 2 * sig2 .* nu) ./ Su.^2;
+    % Var(Sd) = process variance over the whole exposure, plus 2*sigma^2
+    % for EACH telescoped serial segment. (The moment regression above is
+    % different and correctly uses nu: there the residuals are per
+    % increment, and each one genuinely carries 2*sigma^2.)
+    var_r = (ru .* beta .* Su + 2 * sig2 .* ns) ./ Su.^2;
     v = max(var_r ./ ru.^2, 1e-4);              % delta method on log scale
 
     % ---- mu, tau: marginal likelihood  la_c ~ N(mu, tau^2 + v_c) ---------

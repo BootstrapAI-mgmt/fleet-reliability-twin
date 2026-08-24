@@ -101,7 +101,12 @@ function [flags, calib] = detect_faults(D, fit, K, n_months)
     Sd_pre = cd_(js) - cd_(f); Su_pre = cdu(js) - cdu(f); n_pre = cn(js) - cn(f);
     r_pre = max(Sd_pre ./ max(Su_pre, eps), 1e-6);
     la_pre = log(r_pre / bk);
-    v_pre = max((r_pre .* bk .* Su_pre + 2 * s2 .* n_pre) ./ max(Su_pre, eps).^2 ./ r_pre.^2, 1e-4);
+    % Segments, not increments -- the rule this file states at the top and
+    % applies correctly to the post-onset window below. Sd_pre telescopes
+    % within each serial, so it carries 2*sigma^2 once per segment.
+    jp = max(js - 1, f);
+    nseg_pre = seg(jp) - seg(f) + 1;
+    v_pre = max((r_pre .* bk .* Su_pre + 2 * s2 .* nseg_pre) ./ max(Su_pre, eps).^2 ./ r_pre.^2, 1e-4);
     v_pre(n_pre < 3) = 1e6;                      % no usable history -> prior only
     pv_ = 1 ./ (1 / t2 + 1 ./ v_pre);
     pm_ = pv_ .* (mk / t2 + la_pre ./ v_pre);

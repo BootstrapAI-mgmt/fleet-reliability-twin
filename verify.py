@@ -72,6 +72,7 @@ rul["basis"] = rul["chan"].astype(int).map(basis)
 p("  Brier by damage basis:")
 p(rul.groupby("basis").apply(lambda g: pd.Series(dict(n=len(g), brier=np.mean((g.pfail - (g.ttf > 0)) ** 2)))).round(4).to_string())
 
+
 # 5 ---------------------------------------------------------------
 F = rul[[f"F{m}" for m in range(1, H + 1)]].values
 inc = np.diff(np.hstack([np.zeros((len(F), 1)), F]), axis=1)
@@ -107,6 +108,34 @@ for cl in ["accelerated", "scale_error"]:
 w = df[(df.pred == "none") & df.watch]
 p(f"  watch list: {len(w)} channels, of which truly faulted {np.sum(w.true != 'none')} "
   f"({np.mean(w.true != 'none'):.2f} precision vs base rate {np.mean(df.true != 'none'):.3f})")
+
+# --- detecting a fault must not make the forecast WORSE -------------
+#
+# It used to. Every flagged class was dropped from the refit, so a
+# genuinely accelerating unit -- real damage, not a sensor fault -- had
+# its severity replaced by the fleet average. Scored against truth, the
+# units the detector CAUGHT came out worse than the ones it missed:
+# catching a fault actively degraded the forecast. Nothing in the suite
+# would have surfaced that, so the comparison is a permanent check now
+# rather than a one-off finding.
+p("  detection must not degrade the forecast:")
+_b = rul.set_index(rul["chan"].astype(int))
+for cl in ["accelerated", "dropout", "bias_step", "scale_error", "stuck"]:
+    sub = df[df.true == cl]
+    if sub.empty:
+        continue
+    rows = []
+    for caught_flag, label in [(True, "caught"), (False, "missed")]:
+        ch = sub[(sub.pred != "none") == caught_flag]["chan"].astype(int)
+        g = _b.reindex(ch).dropna(subset=["pfail"])
+        if len(g) == 0:
+            rows.append(f"{label} n=0")
+        else:
+            br = float(np.mean((g.pfail - (g.ttf > 0)) ** 2))
+            rows.append(f"{label} n={len(g):3d} brier={br:.4f}")
+    p(f"    {cl:12s} " + " | ".join(rows))
+p(f"    (base-rate Brier = {float(np.mean((rul.ttf > 0)) * (1 - np.mean(rul.ttf > 0))):.4f};"
+  f" caught should not be worse than missed)")
 
 # 7 ---------------------------------------------------------------
 q = pd.read_csv(work / "quarantine.csv")

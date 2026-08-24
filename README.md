@@ -48,13 +48,13 @@ faulted sensor channels; 7.2k corrupted records; 18-month forecast window.
 | | |
 |---|---|
 | Ingest | 7,073 quarantined with reason codes (0.98%), 7 of 7 corruption classes at 100% except `units_x10` at 0.88 (undetectable below the physical fence by design) |
-| Process scale β | all 8 within 2–15% of truth; sensor σ exact where identifiable |
-| Severity posterior | 90% interval covers truth **0.872**; median shrinkage 0.31 |
-| Thresholds | all 8 within 1% |
-| RUL interval coverage | **0.858** at nominal 0.90 (5,808 units that failed in-window) |
-| P(fail within 18 mo) | Brier 0.100 vs 0.250 base rate; calibration by decile within 0.04 everywhere |
-| First failures by month | 17 of 18 months inside the 90% band; total +2.7% |
-| Fault detection | stuck 96/96 at 0 latency, dropout 91/96, bias 62/99 (rest wait for next install), false alarms **0.44%** |
+| Process scale β | all 8 within 2–15% of truth, and all biased low; sensor σ exact where identifiable |
+| Severity posterior | 90% interval covers truth **0.874**; median shrinkage 0.19 |
+| Thresholds | seven of eight within 1%, the eighth at 1.07%; all eight biased low |
+| RUL interval coverage | **0.848** at nominal 0.90 (5,808 units that failed in-window) |
+| P(fail within 18 mo) | Brier **0.096** vs 0.250 base rate; calibration by decile within 0.04 everywhere |
+| First failures by month | 15 of 18 months inside the 90% band; total −0.6% |
+| Fault detection | stuck 96/96 at 0 latency, dropout 91/96, bias 63/99 (rest wait for next install), false alarms **0.43%** |
 | Power vs process shape | 2× acceleration: 6/9 at shape 4.5/mo → 0/18 at shape 0.2/mo |
 
 That last row is the most useful finding. Detectability of a rate change from
@@ -65,8 +65,18 @@ however the test is built. The honest product response is a tiered output —
 hard flags with a stated false-alarm rate, plus a watch list (2.5× the base
 rate of true faults) for human review — not a tuned classifier.
 
+Detecting a fault also has to *improve* the forecast, and `verify.py` checks
+that directly against truth. For accelerated wear the caught units now score a
+Brier of **0.000** against **0.160** for the ones the detector missed; for
+dropout, 0.118 against 0.309. That comparison exists because an earlier
+version failed it — see [Known limitations](#known-limitations) and
+`results/failures.md`.
+
 Both test suites pass: 15 Octave known-parameter tests, 18 pytest tests of
-ingest, checkpointing, retry policy, and provenance audit.
+ingest, checkpointing, retry policy, and provenance audit. The Octave suite
+asserts that the estimator is *unbiased* over replicate fleets against a
+Monte Carlo standard error measured from those replicates, rather than that a
+single draw lands inside a chosen tolerance.
 
 ## Hardening
 
@@ -117,9 +127,22 @@ pytest
 
 ## Known limitations
 
-- Severity is pooled per installation; part-to-part variation (0.15 log-sd in
-  the simulator) is ignored, which is the likely source of the 0.87 vs 0.90
-  posterior coverage.
+- Severity is pooled per installation, so a channel's estimate is shared
+  across every serial that has occupied it. The residual 0.87 vs 0.90
+  posterior coverage is not fully explained; an earlier version of this file
+  attributed it to part-to-part variation being ignored, which was wrong —
+  the simulator draws severity once per (tail, component) and never redraws
+  it, so there is no such variation to ignore. The larger contributor was a
+  derivation error in the sampling variance of the channel rate, now fixed
+  (`results/failures.md`), which moved τ from 0.32–0.44 to 0.39–0.49 against
+  a true 0.474.
+- **Channels whose readings are genuinely corrupted forecast worse than a
+  constant.** For stuck channels the Brier is 0.33 against a 0.25 base rate,
+  and for bias-step and scale-error channels 0.21–0.23. Their damage state
+  has to come from a usage model, and that model is confidently wrong rather
+  than appropriately uncertain. The honest response is to widen the interval
+  for these channels rather than issue a sharp probability; that is not yet
+  implemented, and the numbers above are what it costs.
 - Sensor σ is weakly identified when `2σ²` is much smaller than the
   per-increment process variance — which is also when it matters least.
 - Current damage for RUL is the last reading, not a noise-aware posterior;

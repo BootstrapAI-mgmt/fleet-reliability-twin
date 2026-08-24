@@ -4,7 +4,8 @@ Stages (each a pure function of its inputs on disk):
 
   ingest   dirty records  -> clean_named.csv, quarantine.csv, ingest_summary.json
   encode   clean_named    -> clean.csv (numeric), config.json
-  fit1     clean          -> fit_units.csv, fit_comp.json            [MATLAB]
+  fit1     clean          -> fit_units.csv,  fit_comp.json           [MATLAB]
+  fit2     clean, flags   -> fit2_units.csv, fit2_comp.json          [MATLAB]
   detect   clean, fit1    -> flags.csv, detect_calib.json            [MATLAB]
   fit2     clean, flags   -> refit with flagged channels excluded     [MATLAB]
   state    clean, fit2, flags, events -> rul_in.csv, comp_params.csv, ledger seed
@@ -29,6 +30,7 @@ Hardening rules
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 import json
 import os
 import shutil
@@ -66,11 +68,37 @@ def _sha_file(p: Path) -> str:
     return h.hexdigest()
 
 
+_MATLAB_DIR = Path(__file__).resolve().parent.parent / "matlab"
+
+
+@lru_cache(maxsize=1)
+def _numerics_digest() -> str:
+    """Hash of every .m file the Octave stages execute.
+
+    Without this the stage key covers only the DATA inputs and the
+    Python-side params, so editing the numerics is invisible to the cache.
+    That was not theoretical: changing the spike threshold in
+    detect_faults.m from 2e-5 to 0.5 -- which flags essentially every
+    channel -- produced a byte-identical flags.csv, because the stage was
+    served from a checkpoint keyed on inputs that had not changed. The run
+    reported success and republished the previous ledger.
+
+    A pipeline that claims a change anywhere upstream invalidates
+    everything downstream has to include the code in "upstream".
+    """
+    h = hashlib.sha256()
+    for f in sorted(_MATLAB_DIR.rglob("*.m")):
+        h.update(f.relative_to(_MATLAB_DIR).as_posix().encode())
+        h.update(_sha_file(f).encode())
+    return h.hexdigest()[:16]
+
+
 def _key(inputs: list[Path], params: dict) -> str:
     h = hashlib.sha256()
     for p in inputs:
         h.update(p.name.encode()); h.update(_sha_file(p).encode())
     h.update(json.dumps(params, sort_keys=True).encode())
+    h.update(_numerics_digest().encode())
     return h.hexdigest()[:16]
 
 
@@ -155,7 +183,13 @@ def run_pipeline(data: Path, work: Path, cfg: dict) -> RunState:
         c = pd.read_csv(tmp / "clean_named.csv")
         c["tail"] = c["tail"].str[1:].astype(int) + 1
         c["component"] = c["component"].map(cidx)
-        c[["tail", "component", "serial", "month", "usage_hours", "reading"]].to_csv(tmp / "clean.csv", index=False)
+        # na_rep matters: pandas writes NaN as an EMPTY field and Octave's
+        # dlmread reads an empty field as 0. A missing damage state would
+        # arrive in the numerics as "brand new, zero damage", and a missing
+        # log-alpha as alpha = 1 -- 50-250x the fleet nominal. Writing the
+        # literal NaN lets the guards on the far side see it.
+        c[["tail", "component", "serial", "month", "usage_hours", "reading"]].to_csv(
+            tmp / "clean.csv", index=False, na_rep="NaN")
         (tmp / "config.json").write_text(json.dumps(dict(
             K=K, n_months=n_months, forecast_months=cfg["forecast_months"],
             mc_reps=cfg["mc_reps"], seed=cfg["seed"], tat=cfg["tat"])))
@@ -167,6 +201,11 @@ def run_pipeline(data: Path, work: Path, cfg: dict) -> RunState:
         def f(tmp):
             ob.run_stage(stage, tmp)
         return f
+    # fit1 and fit2 previously declared the SAME output filenames, so each
+    # overwrote the other's checkpoint and neither stage could ever be
+    # served from cache -- both re-ran on every invocation, and stayed
+    # correct only because the re-run order happened to leave the right
+    # file on disk. Namespacing the outputs makes the caching real.
     Stage("fit1", work, [work / "clean.csv", work / "config.json"], ["fit_units.csv", "fit_comp.json"],
           dict(pass_=1), st).run(matlab("fit"))
     gate_fit(work, comps, st, "fit1")
@@ -184,33 +223,77 @@ def run_pipeline(data: Path, work: Path, cfg: dict) -> RunState:
         raise GateFailure(f"detect: {flagged_frac:.1%} of channels flagged; either the fleet or the "
                           f"detector is broken -- refusing to forecast on it")
 
+    # Only the classes that corrupt the READING are excluded from the refit.
+    #
+    #   1 bias_step, 2 scale_error, 3 stuck   -> reading is wrong, exclude
+    #   4 dropout                             -> readings are MISSING, not
+    #                                            wrong; the ones that survived
+    #                                            are clean, so excluding the
+    #                                            channel discards good data
+    #   5 accelerated                         -> not a sensor fault at all.
+    #                                            This is real damage.
+    #
+    # Excluding every flagged class made the forecast WORSE than a constant
+    # for the channels the detector correctly identified. Class 5 was the
+    # clearest case: a unit degrading at twice the fleet rate had its
+    # severity replaced by the fleet average, which is the opposite of the
+    # correct response. Measured against hidden truth, every caught
+    # accelerating unit subsequently failed while the model gave them 0.66,
+    # and the units the detector MISSED scored better than the ones it
+    # caught. A detector that makes the estimate worse is worse than no
+    # detector.
+    CORRUPTS_READING = (1, 2, 3)
+
     def do_exclude(tmp):
-        ex = (flags[:, 3] > 0).astype(int)
+        ex = np.isin(flags[:, 3], CORRUPTS_READING).astype(int)
         np.savetxt(tmp / "exclude.csv", ex, fmt="%d")
         ob.run_stage("fit", tmp)
+        # The Octave stage writes fixed filenames; rename so the two passes
+        # occupy distinct checkpoints.
+        os.replace(tmp / "fit_units.csv", tmp / "fit2_units.csv")
+        os.replace(tmp / "fit_comp.json", tmp / "fit2_comp.json")
     Stage("fit2", work, [work / "clean.csv", work / "config.json", work / "flags.csv"],
-          ["fit_units.csv", "fit_comp.json"], dict(pass_=2), st).run(do_exclude)
+          ["fit2_units.csv", "fit2_comp.json"],
+          # The exclusion policy IS a parameter of this stage, so it belongs
+          # in the key. Changing which fault classes are excluded must
+          # invalidate the checkpoint, for the same reason editing the
+          # numerics must.
+          dict(pass_=2, corrupts_reading=list(CORRUPTS_READING)), st).run(do_exclude)
     gate_fit(work, comps, st, "fit2")
 
     # ---- state: thresholds, current damage, RUL inputs ---------------------
     def do_state(tmp):
         build_state(tmp, work, data, comps, cfg, st)
-    Stage("state", work, [work / "clean.csv", work / "fit_units.csv", work / "fit_comp.json",
+    Stage("state", work, [work / "clean.csv", work / "fit2_units.csv", work / "fit2_comp.json",
                           work / "flags.csv", data / "events.csv"],
           ["rul_in.csv", "comp_params.csv", "usage.csv", "avail_units.csv", "state_ledger.json"],
           dict(stale=cfg["stale_months"]), st).run(do_state)
 
     Stage("rul", work, [work / "rul_in.csv", work / "config.json"], ["rul_out.csv"], {}, st).run(matlab("rul"))
     rul = np.loadtxt(work / "rul_out.csv", delimiter=",")
-    if not (np.all(rul[:, 1] <= rul[:, 2] + 1e-9) and np.all(rul[:, 2] <= rul[:, 3] + 1e-9)
-            and np.all((rul[:, 4] >= 0) & (rul[:, 4] <= 1))):
-        raise GateFailure("rul: non-monotone quantiles or pfail outside [0,1]")
+    # +Inf in the QUANTILE columns is a documented, meaningful value: the
+    # unit does not reach the threshold inside the search horizon. NaN is
+    # never meaningful anywhere, and a NaN would have passed the original
+    # gate -- monotonicity comparisons against NaN are false, and so is
+    # every bound check, so `not (all(...))` was the only thing catching
+    # it, by accident. Probabilities must be finite as well as in range.
+    q, pf = rul[:, 1:4], rul[:, 4:]
+    if np.isnan(rul).any():
+        raise GateFailure(f"rul: {int(np.isnan(rul).sum())} NaN values in the RUL output")
+    if not np.all(np.isfinite(pf)):
+        raise GateFailure("rul: non-finite failure probabilities")
+    if not (np.all(q[:, 0] <= q[:, 1] + 1e-9) and np.all(q[:, 1] <= q[:, 2] + 1e-9)):
+        raise GateFailure("rul: non-monotone quantiles")
+    if not np.all((pf >= 0) & (pf <= 1)):
+        raise GateFailure("rul: failure probability outside [0,1]")
 
     Stage("avail", work, [work / "avail_units.csv", work / "comp_params.csv", work / "usage.csv",
                           work / "config.json"], ["avail.json"], {}, st).run(matlab("avail"))
     av = json.loads((work / "avail.json").read_text())
     a = np.array(av["avail"])
-    if a.min() < 0 or a.max() > 1:
+    # np.nan < 0 and np.nan > 1 are both False, so a NaN availability
+    # sailed straight through this gate. Check finiteness first.
+    if not np.all(np.isfinite(a)) or a.min() < 0 or a.max() > 1:
         raise GateFailure("avail: availability outside [0,1]")
     st.facts["avail"] = av
 
@@ -225,7 +308,10 @@ def run_pipeline(data: Path, work: Path, cfg: dict) -> RunState:
 
 
 def gate_fit(work: Path, comps, st: RunState, name: str):
-    fc = json.loads((work / "fit_comp.json").read_text())
+    # Each pass writes its own file now, so the gate must read the one that
+    # belongs to the pass it is gating.
+    fname = "fit_comp.json" if name == "fit1" else "fit2_comp.json"
+    fc = json.loads((work / fname).read_text())
     for k, c in enumerate(comps):
         b = fc[k]["beta"]
         if b is None or not np.isfinite(b):
@@ -240,8 +326,8 @@ def gate_fit(work: Path, comps, st: RunState, name: str):
 def build_state(tmp: Path, work: Path, data: Path, comps, cfg, st: RunState):
     K = len(comps); n_months = cfg["n_months"]; stale = cfg["stale_months"]
     D = pd.read_csv(work / "clean.csv")
-    fc = json.loads((work / "fit_comp.json").read_text())
-    U = np.loadtxt(work / "fit_units.csv", delimiter=",")
+    fc = json.loads((work / "fit2_comp.json").read_text())
+    U = np.loadtxt(work / "fit2_units.csv", delimiter=",")
     flags = np.loadtxt(work / "flags.csv", delimiter=",")
     events = pd.read_csv(data / "events.csv")
 
@@ -259,12 +345,12 @@ def build_state(tmp: Path, work: Path, data: Path, comps, cfg, st: RunState):
         if not np.isfinite(L[k]):
             st.degradations.append(f"state: no failure history for {comps[k-1]}; threshold unknown")
     comp_params = np.array([[fc[k - 1]["beta"], L[k]] for k in range(1, K + 1)], dtype=float)
-    pd.DataFrame(comp_params, columns=["beta", "threshold"]).to_csv(tmp / "comp_params.csv", index=False)
+    pd.DataFrame(comp_params, columns=["beta", "threshold"]).to_csv(tmp / "comp_params.csv", index=False, na_rep="NaN")
 
     usage = D.groupby("tail")["usage_hours"].mean()
     T = int(D["tail"].max())
     ur = np.array([[t, float(usage.get(t, usage.mean()))] for t in range(1, T + 1)])
-    pd.DataFrame(ur, columns=["tail", "usage_per_month"]).to_csv(tmp / "usage.csv", index=False)
+    pd.DataFrame(ur, columns=["tail", "usage_per_month"]).to_csv(tmp / "usage.csv", index=False, na_rep="NaN")
 
     # current state per channel = latest serial's latest reading
     D = D.sort_values(["tail", "component", "month"])
@@ -317,7 +403,7 @@ def build_state(tmp: Path, work: Path, data: Path, comps, cfg, st: RunState):
             alpha_post=alpha, shrinkage=round(float(shrink), 3), n_increments=n_incr,
             sensor_status=cls, watch=bool(f[8]) if f is not None else False,
             notes=notes)
-    pd.DataFrame(rows, columns=["chan", "x0", "la_mu", "la_var", "beta", "L", "usage"]).to_csv(tmp / "rul_in.csv", index=False)
-    pd.DataFrame(avail_rows, columns=["tail", "comp", "x0", "la_mu", "la_var"]).to_csv(tmp / "avail_units.csv", index=False)
+    pd.DataFrame(rows, columns=["chan", "x0", "la_mu", "la_var", "beta", "L", "usage"]).to_csv(tmp / "rul_in.csv", index=False, na_rep="NaN")
+    pd.DataFrame(avail_rows, columns=["tail", "comp", "x0", "la_mu", "la_var"]).to_csv(tmp / "avail_units.csv", index=False, na_rep="NaN")
     (tmp / "state_ledger.json").write_text(json.dumps(dict(thresholds={comps[k-1]: L[k] for k in L},
                                                             channels=ledger)))

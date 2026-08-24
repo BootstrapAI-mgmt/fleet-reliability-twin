@@ -124,8 +124,11 @@ def render_summary(ledger: dict, st) -> str:
         f"Ingest accepted {rin:,} inspection records and quarantined {rq:,} ({qf}%) with reason codes; "
         f"nothing was silently repaired.",
         f"Sensor screening flagged {nfl} channels ({cls_line}) and placed {nw} more on a watch list "
-        f"with weak, unconfirmed evidence of a rate change. Flagged channels were excluded from the "
-        f"fleet fit and their damage state was estimated from usage rather than from the reading.",
+        f"with weak, unconfirmed evidence of a rate change. Only the classes that corrupt the "
+        f"reading itself (bias step, scale error, stuck) are excluded from the fleet fit and have "
+        f"their damage state estimated from usage; dropout channels keep the readings that did "
+        f"arrive, and accelerated channels are kept in full, because accelerated wear is real "
+        f"damage rather than a sensor fault.",
         "",
         f"Forecasts were issued for {nch:,} installed components over a {H}-month horizon. "
         f"The expected number of failures in that window is {ef}; {nhr} components exceed the "
