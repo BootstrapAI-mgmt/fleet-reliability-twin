@@ -186,7 +186,3 @@ function [flags, calib] = detect_faults(D, fit, K, n_months)
   end
 end
 
-function q = quantile_(y, p)
-  y = sort(y(:)); n = numel(y);
-  q = y(max(1, min(n, round(p * n))));
-end

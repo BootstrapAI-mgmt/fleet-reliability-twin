@@ -16,7 +16,7 @@ function run_stage(stage, work)
         ex = logical(dlmread(exf));
       end
       fit = fit_gamma_process(D, K, ex);
-      % unit table: serial comp tail alpha la_mu la_var shrink n_incr
+      % unit table: chan comp tail alpha la_mu la_var shrink n_incr
       dlmwrite(fullfile(work, 'fit_units.csv'), fit.unit, 'precision', '%.8g');
       fid = fopen(fullfile(work, 'fit_comp.json'), 'w');
       fprintf(fid, '%s', jsonencode(fit.comp)); fclose(fid);
