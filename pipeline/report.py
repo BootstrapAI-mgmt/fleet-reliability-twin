@@ -107,7 +107,10 @@ def render_summary(ledger: dict, st) -> str:
     nhr = fact("nhr", ledger["n_high_risk"])
     thr = fact("thr", ledger["high_risk_threshold"])
     ing = ledger["ingest"]
-    rin = fact("rin", ing["rows_in"]); rq = fact("rq", ing["rows_quarantined"])
+    # "accepted" must count the rows that were accepted, not the rows that
+    # arrived: quoting rows_in as accepted double-counted the quarantined
+    # rows in the audited narrative's first sentence.
+    rin = fact("rin", ing["rows_clean"]); rq = fact("rq", ing["rows_quarantined"])
     qf = fact("qf", round(100 * ing["quarantine_frac"], 2))
     det = ledger["detect"]
     nfl = fact("nfl", det["n_flagged"]); nw = fact("nw", det["n_watch"])

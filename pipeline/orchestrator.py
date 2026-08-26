@@ -84,11 +84,14 @@ def _numerics_digest() -> str:
     reported success and republished the previous ledger.
 
     A pipeline that claims a change anywhere upstream invalidates
-    everything downstream has to include the code in "upstream".
+    everything downstream has to include the code in "upstream" -- ALL of
+    it. The first fix hashed only the .m files, so editing this very file
+    (thresholds in build_state, the ingest rules) still served yesterday's
+    checkpoints: the same defect, one language over.
     """
     h = hashlib.sha256()
-    for f in sorted(_MATLAB_DIR.rglob("*.m")):
-        h.update(f.relative_to(_MATLAB_DIR).as_posix().encode())
+    for f in sorted(_MATLAB_DIR.rglob("*.m")) + sorted(Path(__file__).resolve().parent.glob("*.py")):
+        h.update(f.name.encode())
         h.update(_sha_file(f).encode())
     return h.hexdigest()[:16]
 
@@ -131,7 +134,14 @@ class Stage:
         tmp = Path(tempfile.mkdtemp(prefix=f".{self.name}.", dir=self.work))
         try:
             for inp in self.inputs:                  # stage reads only its declared inputs
-                os.symlink(inp.resolve(), tmp / inp.name)
+                try:
+                    os.symlink(inp.resolve(), tmp / inp.name)
+                except OSError:
+                    # Windows denies symlink creation without Developer Mode
+                    # (WinError 1314). A copy gives the same isolation for
+                    # more disk; refusing to run at all on a stock Windows
+                    # checkout is the worse trade.
+                    shutil.copy2(inp.resolve(), tmp / inp.name)
             attempt = 0
             while True:
                 try:
@@ -348,9 +358,18 @@ def build_state(tmp: Path, work: Path, data: Path, comps, cfg, st: RunState):
     pd.DataFrame(comp_params, columns=["beta", "threshold"]).to_csv(tmp / "comp_params.csv", index=False, na_rep="NaN")
 
     usage = D.groupby("tail")["usage_hours"].mean()
+    # Usage volatility is estimated from each tail's own monthly history.
+    # An earlier availability_mc hardcoded 0.15 -- the generator's hidden
+    # truth constant, copied into the estimator. Everything the pipeline is
+    # asked to infer has to come from the data it was given.
+    pos = D[D["usage_hours"] > 0]
+    lsd = pos.groupby("tail")["usage_hours"].apply(lambda s: float(np.log(s).std()))
+    lsd = lsd[np.isfinite(lsd)]
+    fleet_lsd = float(np.median(lsd.values)) if len(lsd) else 0.0
     T = int(D["tail"].max())
-    ur = np.array([[t, float(usage.get(t, usage.mean()))] for t in range(1, T + 1)])
-    pd.DataFrame(ur, columns=["tail", "usage_per_month"]).to_csv(tmp / "usage.csv", index=False, na_rep="NaN")
+    ur = np.array([[t, float(usage.get(t, usage.mean())), float(lsd.get(t, fleet_lsd))]
+                   for t in range(1, T + 1)])
+    pd.DataFrame(ur, columns=["tail", "usage_per_month", "log_usage_sd"]).to_csv(tmp / "usage.csv", index=False, na_rep="NaN")
 
     # current state per channel = latest serial's latest reading
     D = D.sort_values(["tail", "component", "month"])

@@ -1,15 +1,44 @@
-name: ci
-on: [push, pull_request]
+name: verification
+
+# Re-derives the committed verification on every push -- same generator
+# defaults (1,500 tails x 60 months, seed 7), same pipeline -- then verify.py
+# ASSERTS its checks (exit non-zero on statistical regression) and
+# tools/compare_verification.py diffs the fresh numbers against the committed
+# artifact. A re-derivation that is never compared to the committed claims
+# would catch nothing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends octave
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
+        with: {python-version: "3.13"}
       - run: pip install -r requirements.txt
-      - run: octave --no-gui -q --eval "addpath('matlab'); addpath('matlab/tests'); run_tests"
-      - run: python -m pytest -q tests
-      - run: python simulate/generate_fleet.py --tails 200 --months 48
-      - run: python run.py && python verify.py
+      - name: Octave known-parameter suite
+        run: octave --no-gui -q --eval "addpath('matlab'); addpath('matlab/tests'); run_tests"
+      - name: pytest
+        run: python -m pytest -q tests
+      - name: generate the fleet the committed artifacts describe (full size, seed 7)
+        run: python simulate/generate_fleet.py
+      - name: end-to-end pipeline
+        run: python run.py
+      - name: save committed verification artifact
+        run: git show HEAD:results/verification_output.txt > /tmp/committed_verification.txt
+      - name: verification against hidden truth (asserting)
+        run: python verify.py
+      - name: fresh numbers must match the committed artifact
+        run: python tools/compare_verification.py /tmp/committed_verification.txt results/verification_output.txt
+      - name: upload fresh verification output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-output
+          path: results/verification_output.txt

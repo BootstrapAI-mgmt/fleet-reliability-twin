@@ -22,17 +22,31 @@ class NumericsUnavailable(RuntimeError):
     """Transient: the interpreter could not be started (retryable)."""
 
 
+def _q(p) -> str:
+    """Quote a path for a single-quoted Octave/MATLAB string literal.
+
+    Both languages escape an embedded quote by doubling it; interpolating
+    the raw path meant a checkout under a directory with an apostrophe
+    (O'Brien, "Josh's laptop") produced a syntax error inside the eval.
+    """
+    return str(p).replace("'", "''")
+
+
 def run_stage(stage: str, work: Path, timeout: int = 3600) -> str:
     work = Path(work).resolve()
+    code = f"addpath('{_q(MATLAB_DIR)}'); run_stage('{_q(stage)}','{_q(work)}')"
     cmd = os.environ.get("MATLAB_CMD")
     if cmd:
-        argv = [cmd, "-batch", f"addpath('{MATLAB_DIR}'); run_stage('{stage}','{work}')"]
+        argv = [cmd, "-batch", code]
     else:
-        octave = shutil.which("octave") or shutil.which("octave-cli")
+        # Prefer the CLI binary: on Windows the bare `octave` launcher can
+        # hang waiting for environment bootstrap that only the -cli
+        # executable does itself, and a headless pipeline wants the CLI
+        # regardless.
+        octave = shutil.which("octave-cli") or shutil.which("octave")
         if not octave:
             raise NumericsUnavailable("neither MATLAB_CMD nor octave found on PATH")
-        argv = [octave, "--no-gui", "-q", "--eval",
-                f"addpath('{MATLAB_DIR}'); run_stage('{stage}','{work}')"]
+        argv = [octave, "--no-gui", "-q", "--eval", code]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as e:

@@ -1,3 +1,6 @@
-numpy>=1.24
-pandas>=2.0
-pytest>=7
+# Pinned exactly: CI compares the freshly derived verification against the
+# committed artifact numerically, and floating dependencies are how identical
+# code quietly stops producing identical numbers.
+numpy==2.4.2
+pandas==3.0.0
+pytest>=8

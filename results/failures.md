@@ -43,7 +43,7 @@ Calibrating on windows and flagging on channel maxima are different tests;
 the result was 979 false alarms (8% of clean channels). Replaced by an exact
 gamma-tail p-value with Bonferroni correction over candidate onsets, so the
 false-alarm rate is a stated number (0.1% per channel), and the achieved rate
-(0.44%, including the spike test) is measured in verify.py.
+(0.43%, including the spike test) is measured in verify.py.
 
 ## 5. A spike p-value that ignored sensor noise
 
@@ -63,8 +63,8 @@ stated rather than tuned away.
 
 ## 7. Month-1 over-prediction of first failures
 
-The expected-failure curve over-predicts month 1 (433 vs 327 actual) and is
-well calibrated thereafter (17/18 months inside the 90% band). Units whose
+The expected-failure curve over-predicts month 1 (423 vs 327 actual) and is
+well calibrated thereafter (15/18 months inside the 90% band). Units whose
 last reading sits just under the estimated threshold are assigned near-certain
 immediate failure, but the threshold estimate is a 97th-percentile lower
 bound and the reading carries noise. This is visible, not hidden, and the
@@ -215,3 +215,60 @@ quadrature variable.
 
 The fleet *total* was unaffected because the errors cancel, which is why it
 went unnoticed. The per-channel number is the one an operator acts on.
+
+---
+
+The entries below came from a third adversarial review — this one of the
+repository's evidence chain rather than its code.
+
+## 14. The verification scored the fit the product does not ship, and could not fail
+
+Three defects compounded. `verify.py` section 1 printed "(fit2, flagged
+channels excluded)" while reading `fit_units.csv` and `fit_comp.json` —
+**fit1's** outputs, with every faulted channel included (its own printed
+n = 12,000 said so, since fit2 has ~11,788 rows). The headline recovery
+table and the severity coverage were therefore measured on a fit nothing
+downstream consumes. Second, `verify.py` contained no assertion, raise, or
+exit anywhere — despite this file's own section 8 claiming the
+caught-vs-missed comparison was "asserted permanently" — so CI could fail
+only on a crash, never on a statistical regression. Third, two of the three
+committed results artifacts (`summary_example.md`, `ledger_examples.md`)
+were stale hand-copies from a superseded run, contradicting the third on
+the same page.
+
+**Fix:** sections 1–2 read the fit2 files and print the severity coverage
+split by true sensor class (which also resolved the "unexplained" coverage
+gap — clean channels sit at 0.873, and the faulted classes' apparent
+miscoverage is a scoring artifact, since truth stores pre-fault severity);
+`verify.py` now carries 26 checks with derived tolerances and exits
+non-zero; CI regenerates the verification and compares it numerically
+against the committed artifact; and the example artifacts are written by
+`run.py --publish-examples` instead of by hand.
+
+## 15. "Nominal 0.900" was a conditioning error
+
+RUL interval coverage is measured on the units that failed inside the
+window, but the intervals are unconditional. Conditioning on failure
+truncates the interval's upper tail, so a PERFECTLY calibrated model does
+not score 0.90 on this metric: per unit the attainable coverage is
+(F−.05)/F for .05 < F < .95 and .90/F above, which — averaged over the
+units that actually failed — gives a benchmark of **0.885** on this fleet.
+The old artifact printed "0.848 (nominal 0.900)", overstating the shortfall
+by 2.4× against a nominal the metric could never reach. The benchmark is
+now computed in `verify.py` and the shortfall (0.037) is gated at 0.06.
+
+## 16. The estimator was told a hidden constant, and the tests could not run on MATLAB
+
+`availability_mc.m` drew monthly usage with a hardcoded volatility of
+0.15 — the generator's hidden truth constant, copied into the estimator.
+Nothing the pipeline is asked to infer may be typed in from the
+simulator's source; the volatility is now estimated from each tail's own
+monthly usage history and carried through `usage.csv`.
+
+The same file (and the test suite) also called `randg('seed', ...)` —
+Octave-only API, absent from base MATLAB — under a "runs on MATLAB
+unchanged" claim. All gamma draws now go through `gamma_sample.m`
+(Marsaglia–Tsang over randn/rand), which is portable and, more
+importantly, leaves rand/randn as the only generator states in play — the
+failure mode section 13 of this file documents (randg's separate state
+running unseeded) is now structurally impossible.

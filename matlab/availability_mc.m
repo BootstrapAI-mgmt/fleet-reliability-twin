@@ -1,11 +1,16 @@
-function out = availability_mc(U, P, usage_rate, H, R, tat, seed)
+function out = availability_mc(U, P, usage, H, R, tat, seed)
 %AVAILABILITY_MC  Fleet availability and failure-count forecast by Monte Carlo.
 %
-%   out = AVAILABILITY_MC(U, P, usage_rate, H, R, tat, seed)
+%   out = AVAILABILITY_MC(U, P, usage, H, R, tat, seed)
 %
 %   U : M x 5  [tail comp x0 la_mu la_var]  one row per installed unit
 %   P : K x 2  [beta threshold]             per component type
-%   usage_rate : T x 1 usage hours / month per tail
+%   usage : T x 2  [usage hours/month, sd of log monthly usage] per tail.
+%         The volatility column is ESTIMATED upstream from each tail's own
+%         monthly usage history. An earlier version hardcoded 0.15 here --
+%         which was the generator's hidden truth constant, copied into the
+%         estimator. Nothing the pipeline is asked to infer may be typed in
+%         from the simulator's source (results/failures.md).
 %   H : horizon in months;  R : replications
 %   tat : struct with fields mu, sigma (lognormal repair turnaround, months)
 %         and p_spare (probability a serviceable spare is on the shelf; if
@@ -16,12 +21,27 @@ function out = availability_mc(U, P, usage_rate, H, R, tat, seed)
 %   reflects both sources.  A tail is mission-capable in a month when none of
 %   its components are awaiting repair.
 %
+%   STATED LIMITATION: severity and usage are drawn INDEPENDENTLY per unit,
+%   but a real tail's components share environment and duty, so tail-down
+%   events are positively correlated and this MC understates the spread of
+%   fleet availability (and overstates P(any component down)). Modelling the
+%   shared factor needs a hierarchical tail effect the current fit does not
+%   separate from per-unit severity.
+%
 %   out.avail      : H x 3  [mean p05 p95] fleet availability per month
 %   out.fail_comp  : K x H x 3 expected failures per component per month [mean p05 p95]
 %   out.fail_total : H x 3
 %   out.n_units, out.R
 
-  rand('seed', seed); randn('seed', seed); randg('seed', seed);  % randg carries its own state
+  % 'state' seeds work in both Octave and MATLAB; gamma draws go through
+  % gamma_sample (randn/rand only), so these two streams are the only
+  % randomness there is -- randg, whose separate state once ran unseeded
+  % here and which base MATLAB lacks, is no longer used anywhere.
+  rand('state', seed); randn('state', seed);
+  usage_rate = usage(:, 1); log_sd = usage(:, 2);
+  if any(~isfinite(usage_rate)) || any(~isfinite(log_sd) | log_sd < 0 | log_sd > 2)
+    error('avail:bad_usage', 'non-finite usage rate or implausible log-usage sd');
+  end
   M = size(U, 1); K = size(P, 1); T = numel(usage_rate);
   tail = U(:,1); comp = U(:,2);
   beta = P(comp, 1); L = P(comp, 2);
@@ -33,8 +53,8 @@ function out = availability_mc(U, P, usage_rate, H, R, tat, seed)
     % A NaN damage state is SILENTLY IMMORTAL here: X >= L is false for
     % NaN, so the unit never fails, never enters the failure count, and
     % counts as mission-capable for the whole horizon. Two routes in -- a
-    % NaN x0 from upstream, and randg(0) which returns NaN in Octave when
-    % alpha underflows. Both are guarded rather than left to produce a
+    % NaN x0 from upstream, and a zero shape (alpha underflow) reaching the
+    % gamma sampler. Both are guarded rather than left to produce a
     % plausible availability curve.
     if any(~isfinite(X)) || any(~isfinite(alpha)) || any(alpha <= 0)
       error('avail:nonfinite', ...
@@ -44,14 +64,15 @@ function out = availability_mc(U, P, usage_rate, H, R, tat, seed)
     end
     down_until = -ones(M, 1);
     for m = 1:H
-      du = usage_rate(tail) .* exp(0.15 * randn(M, 1));
+      du = usage_rate(tail) .* exp(log_sd(tail) .* randn(M, 1));
       active = down_until < m;
       shp = alpha .* du;
       dX = zeros(M, 1);
-      % randg(0) is NaN in Octave, and one NaN here makes that unit
+      % a zero/negative shape would be NaN territory; gamma_sample refuses
+      % rather than returning one, and one NaN here would make that unit
       % immortal for the rest of the horizon.
       draw = active & shp > 0;
-      dX(draw) = randg(shp(draw)) .* beta(draw);
+      dX(draw) = gamma_sample(shp(draw)) .* beta(draw);
       X = X + dX;
       if any(~isfinite(X))
         error('avail:nonfinite_path', 'Non-finite damage state after month %d.', m);

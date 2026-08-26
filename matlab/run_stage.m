@@ -44,7 +44,9 @@ function run_stage(stage, work)
       P = dlmread(fullfile(work, 'comp_params.csv'), ',', 1, 0);
       ur = dlmread(fullfile(work, 'usage.csv'), ',', 1, 0);
       tat = cfg.tat;
-      out = availability_mc(U, P, ur(:,2), cfg.forecast_months, cfg.mc_reps, tat, cfg.seed);
+      % columns 2:3 are [usage/month, sd of log monthly usage], both
+      % estimated upstream from the tail's own history
+      out = availability_mc(U, P, ur(:, 2:3), cfg.forecast_months, cfg.mc_reps, tat, cfg.seed);
       fid = fopen(fullfile(work, 'avail.json'), 'w');
       fprintf(fid, '%s', jsonencode(out)); fclose(fid);
     otherwise

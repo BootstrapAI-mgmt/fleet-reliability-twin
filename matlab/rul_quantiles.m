@@ -28,8 +28,8 @@ function [tq, pfail] = rul_quantiles(x0, la_mu, la_var, beta, L, u, probs, horiz
            'become maximum alarm.']);
   end
   [gh_x, gh_w] = gauss_hermite(64);          % nodes/weights (see rul_cdf for why 64)
-  alphas = exp(la_mu + sqrt(2 * la_var) * gh_x');   % n x 16
-  w = (gh_w / sqrt(pi))';                           % 1 x 16
+  alphas = exp(la_mu + sqrt(2 * la_var) * gh_x');   % n x 64
+  w = (gh_w / sqrt(pi))';                           % 1 x 64
   z = max(L - x0, 1e-9) ./ beta;                    % gamma-scaled remaining margin
   Z = z(:, ones(1, numel(gh_w)));                  % explicit expansion (gammainc does not broadcast)
   W = w(ones(n, 1), :);

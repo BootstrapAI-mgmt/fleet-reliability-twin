@@ -1,12 +1,15 @@
 function run_tests()
 %RUN_TESTS  Known-parameter recovery tests for the numerics.  octave --eval run_tests
   addpath(fullfile(fileparts(mfilename('fullpath')), '..'));
-  % randg has its OWN generator state. Seeding rand and randn alone left
-  % every gamma increment -- which is all of the fleet's randomness --
-  % unseeded, so this suite failed roughly one run in three on an
-  % unchanged tree, and CI runs exactly this command behind the README's
-  % status badge.
-  rand('seed', 3); randn('seed', 3); randg('seed', 3);
+  % Gamma draws go through gamma_sample (randn/rand only), so the two
+  % streams seeded here are the only streams there are. The history is in
+  % gamma_sample.m: randg carries its OWN state, and seeding rand/randn
+  % alone once left every gamma increment -- all of the fleet's randomness
+  % -- unseeded, failing this suite roughly one run in three on an
+  % unchanged tree. randg is also absent from base MATLAB, which the
+  % 'runs on MATLAB unchanged' claim never survived; 'state' seeding and
+  % gamma_sample work in both.
+  rand('state', 3); randn('state', 3);
   n_pass = 0; n_fail = 0;
   function check(name, ok)
     if ok, n_pass = n_pass + 1; fprintf('PASS %s\n', name);
@@ -24,20 +27,23 @@ function run_tests()
   %
   % What the suite should assert is that the ESTIMATOR is unbiased, so it
   % now averages over replicate fleets and compares the bias against the
-  % Monte Carlo standard error measured from those same replicates. The
-  % tolerance is therefore derived rather than chosen, and the test fails
-  % only for a real bias.
+  % Monte Carlo standard error measured from those same replicates -- PLUS
+  % an explicit 2%-of-truth allowance for the small-sample bias the fit is
+  % documented to carry (all betas sit slightly low; see README). The SE
+  % term is derived; the 2% is a chosen, disclosed allowance, and the
+  % printed message shows the whole bar so nobody mistakes this for a pure
+  % unbiasedness certificate at R = 5.
   K = 1; months = 48; beta = 0.3; sig = 0.2; a0 = 0.02; tau = 0.4;
   R = 5; T = 300;
   bh = zeros(R,1); sh = zeros(R,1); ah = zeros(R,1); th = zeros(R,1); cv = zeros(R,1);
   for rep = 1:R
-    rand('seed', 100+rep); randn('seed', 100+rep); randg('seed', 100+rep);
+    rand('state', 100+rep); randn('state', 100+rep);
     alpha = a0 * exp(tau * randn(T, 1)); D = zeros(T * months, 6); r = 0;
     urate = 40 * exp(0.35 * randn(T, 1));
     for t = 1:T
       X = 0; serial = t;
       for m = 0:months - 1
-        du = urate(t) * exp(0.15 * randn); X = X + randg(alpha(t) * du) * beta;
+        du = urate(t) * exp(0.15 * randn); X = X + gamma_sample(alpha(t) * du) * beta;
         r = r + 1; D(r, :) = [t 1 serial m du X + sig * randn];
       end
     end
@@ -51,8 +57,9 @@ function run_tests()
   function unbiased(name, est, truth)
     se = std(est) / sqrt(numel(est));
     bias = mean(est) - truth;
-    check(sprintf('%s unbiased: %.4f vs %.4f, bias %+.4f vs 3 SE %.4f', ...
-                  name, mean(est), truth, bias, 3*se), abs(bias) <= 3*se + 0.02*abs(truth));
+    bar = 3*se + 0.02*abs(truth);
+    check(sprintf('%s recovery: %.4f vs %.4f, bias %+.4f vs bar %.4f (= 3 SE %.4f + 2%% allowance)', ...
+                  name, mean(est), truth, bias, bar, 3*se), abs(bias) <= bar);
   end
 
   unbiased('beta',  bh, beta);
@@ -69,7 +76,7 @@ function run_tests()
   N = 20000; tt = zeros(N, 1);
   for i = 1:N
     X = x0; m = 0;
-    while X < Lth, m = m + 1; X = X + randg(a * u) * beta; end
+    while X < Lth, m = m + 1; X = X + gamma_sample(a * u) * beta; end
     tt(i) = m;
   end
   F24 = mean(tt <= 24);
@@ -90,7 +97,7 @@ function run_tests()
 
   % --- availability MC sanity --------------------------------------------
   U = [(1:50)' ones(50, 1) zeros(50, 1) log(a) * ones(50, 1) 0.01 * ones(50, 1)];
-  out = availability_mc(U, [beta Lth], 40 * ones(50, 1), 12, 20, ...
+  out = availability_mc(U, [beta Lth], [40 * ones(50, 1) 0.2 * ones(50, 1)], 12, 20, ...
                         struct('mu', 0.3, 'sigma', 0.4, 'p_spare', 0.9, 'backorder', 2), 1);
   check('availability in [0,1] and band ordered', all(out.avail(:) >= 0 & out.avail(:) <= 1) && ...
         all(out.avail(:, 2) <= out.avail(:, 1) + 1e-9 & out.avail(:, 1) <= out.avail(:, 3) + 1e-9));

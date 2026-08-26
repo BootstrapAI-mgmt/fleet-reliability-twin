@@ -5,7 +5,7 @@ function [flags, calib] = detect_faults(D, fit, K, n_months)
 %
 %   A channel is one (tail, component) sensor; it sees a sequence of component
 %   instances (serials).  Each reading increment is standardized against the
-%   unit's fitted gamma-process prediction.  Four structured residuals give
+%   unit's fitted gamma-process prediction.  Five structured residuals give
 %   a signature that isolates the fault class:
 %
 %     E1 spike     : single increment with gamma-tail p < p_spike
@@ -23,9 +23,14 @@ function [flags, calib] = detect_faults(D, fit, K, n_months)
 %     stuck        0 0 1 0 *
 %     dropout      0 0 0 1 *
 %
-%   All thresholds are p-values against the fitted process model, not tuned
-%   constants.  The achieved false-alarm rate and power are measured in
-%   verify.py rather than assumed.
+%   Where the statistics live and where the judgement lives, stated plainly:
+%   E1 and E2 are p-values against the fitted process model; E1 and E5 also
+%   require a physically large magnitude (4 sigma / 5 sigma floors) so a
+%   statistically-surprising-but-tiny wobble cannot flag; E3 and E4 are
+%   structural rules (exact repeats; missing fraction), not tests. The
+%   floors and structural constants are CHOSEN, and the honest defence of a
+%   chosen constant is measurement: the achieved false-alarm rate and power
+%   are scored against hidden truth in verify.py rather than assumed.
 %
 %   flags : C x 10 matrix, one row per channel (tail-1)*K+comp:
 %      [chan tail comp class onset_month confidence evidence_bits n_obs watch persist_p]

@@ -1,0 +1,8 @@
+# Line endings are part of reproducibility: run_all.sh must stay LF to run
+# on Linux, and CI diffs the verification artifact numerically.
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.m text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
