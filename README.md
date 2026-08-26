@@ -63,8 +63,8 @@ scored fit1 under a fit2 header (`results/failures.md` §14).
 
 | | |
 |---|---|
-| Ingest | 7,073 quarantined with reason codes (0.98%); recall **row-matched to the injected records**: 6 of 7 classes at 1.00, `units_x10` at 0.88 (undetectable below the physical fence by design) |
-| Process scale β | all 8 biased low, within 1–16% of truth; sensor σ within ~2% on the smooth components, up to −20% where weakly identified (disclosed below) |
+| Ingest | 7,073 quarantined with reason codes (0.98%); recall 1.00 on 6 of 7 classes — **row-matched to the injected records** for the 4 classes whose corrupted row keeps its identity, by uncapped reason-code count for the 3 that destroy it (an over-count would show as >1.00) — and `units_x10` at 0.88 (undetectable below the physical fence by design) |
+| Process scale β | all 8 biased low, within 1–17% of truth; sensor σ within ~2% on the smooth components, up to −20% where weakly identified (disclosed below) |
 | Severity posterior | 90% interval covers truth **0.866** overall, and the artifact prints the split: **0.873 on the 11,477 clean channels**; the accelerated/scale rows (0.39–0.44) are scoring artifacts, because truth stores the pre-fault severity the channel no longer wears at |
 | Thresholds | seven of eight within 1%, the eighth at 1.07%; all eight biased low |
 | RUL interval coverage | **0.848 against a conditional benchmark of 0.885** — conditioning on failure-within-window truncates the interval, so a *perfectly calibrated* model scores 0.885 here, not 0.90; the 0.037 shortfall is gated at 0.06. An earlier version printed "nominal 0.900" for this metric, which was a conditioning error, not a model property |

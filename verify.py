@@ -52,12 +52,25 @@ def _digest(path):
             h.update(chunk)
     return h.hexdigest()[:12]
 
+def _octave_version():
+    import shutil, subprocess
+    exe = shutil.which("octave-cli") or shutil.which("octave")
+    if not exe:
+        return "not on PATH"
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60).stdout
+        return (out.splitlines() or ["unknown"])[0]
+    except OSError:
+        return "unknown"
+
 # 0 ---------------------------------------------------------------
 p("== 0. Run identity (excluded from drift comparison) ==")
 p(f"  platform {platform.platform()}")
 p(f"  python {sys.version.split()[0]}  numpy {np.__version__}  pandas {pd.__version__}")
+p(f"  octave (on PATH when verified; the pipeline ran under the same): {_octave_version()}")
 p(f"  data digests: inspections {_digest(data / 'inspections.csv')}  truth {_digest(data / 'truth.json')}")
-p(f"  fleet {tr.get('n_tails', '?')} tails x {K} components x {n_months} months; horizon {H} mo; pipeline seed 11")
+n_tails = sum(1 for _ in open(data / "roster.csv")) - 1
+p(f"  fleet {n_tails} tails x {K} components x {n_months} months; horizon {H} mo; pipeline seed 11")
 
 # 1 ---------------------------------------------------------------
 p("\n== 1. Fleet parameter recovery (fit2 -- the shipped fit; reading-corrupting channels excluded) ==")

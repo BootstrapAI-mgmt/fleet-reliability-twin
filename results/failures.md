@@ -254,8 +254,9 @@ not score 0.90 on this metric: per unit the attainable coverage is
 (F−.05)/F for .05 < F < .95 and .90/F above, which — averaged over the
 units that actually failed — gives a benchmark of **0.885** on this fleet.
 The old artifact printed "0.848 (nominal 0.900)", overstating the shortfall
-by 2.4× against a nominal the metric could never reach. The benchmark is
-now computed in `verify.py` and the shortfall (0.037) is gated at 0.06.
+by 1.4× (an implied 0.052 against the real 0.037) against a nominal the
+metric could never reach. The benchmark is now computed in `verify.py` and
+the shortfall (0.037) is gated at 0.06.
 
 ## 16. The estimator was told a hidden constant, and the tests could not run on MATLAB
 

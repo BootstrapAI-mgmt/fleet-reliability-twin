@@ -1,8 +1,9 @@
 == 0. Run identity (excluded from drift comparison) ==
   platform Windows-10-10.0.19045-SP0
   python 3.13.3  numpy 2.4.2  pandas 3.0.0
+  octave (on PATH when verified; the pipeline ran under the same): GNU Octave (x86_64-w64-mingw32) version 11.3.0
   data digests: inspections e2ed2b3efbc5  truth f007f7d62d93
-  fleet ? tails x 8 components x 60 months; horizon 18 mo; pipeline seed 11
+  fleet 1500 tails x 8 components x 60 months; horizon 18 mo; pipeline seed 11
 
 == 1. Fleet parameter recovery (fit2 -- the shipped fit; reading-corrupting channels excluded) ==
 comp  shape_per_month        beta       sigma     alpha_nom         tau

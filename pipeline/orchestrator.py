@@ -89,9 +89,10 @@ def _numerics_digest() -> str:
     (thresholds in build_state, the ingest rules) still served yesterday's
     checkpoints: the same defect, one language over.
     """
+    root = ROOT
     h = hashlib.sha256()
     for f in sorted(_MATLAB_DIR.rglob("*.m")) + sorted(Path(__file__).resolve().parent.glob("*.py")):
-        h.update(f.name.encode())
+        h.update(f.resolve().relative_to(root).as_posix().encode())
         h.update(_sha_file(f).encode())
     return h.hexdigest()[:16]
 
