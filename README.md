@@ -192,7 +192,7 @@ pytest
 
 ## Companion repositories
 
-One of three, each mirroring a different product in the same domain. They share a design stance -- synthetic data with hidden truth, estimates scored against that truth rather than asserted, and a `failures.md` recording what went wrong and why -- but no code, so each stands alone.
+One of three, each mirroring a different product in the same domain. They share a design stance -- synthetic data with hidden truth, estimates scored against that truth rather than asserted, and a failure log recording what went wrong and why (`results/failures.md` here; `docs/VALIDATION.md` §9 in sustainment-analytics) -- but no code, so each stands alone.
 
 | repo | mirrors | what it does | stack |
 |---|---|---|---|
