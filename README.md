@@ -192,10 +192,10 @@ pytest
 
 ## Companion repositories
 
-One of three, each mirroring a different product in the same domain. They share a design stance -- synthetic data with hidden truth, estimates scored against that truth rather than asserted, and a failure log recording what went wrong and why (`results/failures.md` here; `docs/VALIDATION.md` §9 in sustainment-analytics) -- but no code, so each stands alone.
+One of three self-contained repositories, each taking on a different problem in the same sustainment domain. They share a design stance -- synthetic data with hidden truth, estimates scored against that truth rather than asserted, and a failure log recording what went wrong and why (`results/failures.md` here; `docs/VALIDATION.md` §9 in sustainment-analytics) -- but no code, so each stands alone.
 
-| repo | mirrors | what it does | stack |
-|---|---|---|---|
-| [sustainment-analytics](https://github.com/BootstrapAI-mgmt/sustainment-analytics) | | sparse censored failure records to an auditable spares buy list | MATLAB + Python |
-| **fleet-reliability-twin** (this one) | | gamma-process degradation, sensor-fault isolation, remaining useful life | MATLAB + Python |
-| [depot-flow-twin](https://github.com/BootstrapAI-mgmt/depot-flow-twin) | | Java discrete-event depot simulation, turnaround estimation and forecasting | Java 21 + Python |
+| repo | what it does | stack |
+|---|---|---|
+| [sustainment-analytics](https://github.com/BootstrapAI-mgmt/sustainment-analytics) | sparse censored failure records to an auditable spares buy list | MATLAB + Python |
+| **fleet-reliability-twin** (this one) | gamma-process degradation, sensor-fault isolation, remaining useful life | MATLAB + Python |
+| [depot-flow-twin](https://github.com/BootstrapAI-mgmt/depot-flow-twin) | Java discrete-event depot simulation, turnaround estimation and forecasting | Java 21 + Python |
